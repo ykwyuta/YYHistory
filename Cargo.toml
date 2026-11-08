@@ -1,0 +1,68 @@
+[package]
+name = "yyhistory"
+version = "0.1.0"
+edition = "2021"
+description = "地図と地域別年表を旅し、歴史の出来事を撮影するゲーム（ブラウザ版：Rust → WebAssembly／Windows 版：Rust + Direct3D11 / Direct2D）"
+build = "build.rs"
+
+[features]
+# Run the portable renderer and gameplay simulations without a native window.
+headless = []
+
+[dependencies]
+image = { version = "0.25.9", default-features = false, features = ["jpeg", "png"] }
+
+# ゲーム本体。ブラウザ版はこれを wasm（cdylib）にする
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Windows 版の実行ファイル（cargo build --release で target/release/yyhistory-win.exe）
+[[bin]]
+name = "yyhistory-win"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62.2"
+features = [
+    "Wdk_System_SystemServices",
+    "Win32_Foundation",
+    "Win32_Media_Speech",
+    "Win32_System_Com",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_System_SystemInformation",
+    "Win32_Globalization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
+    "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+]
+
+[target.'cfg(windows)'.dependencies]
+windows-numerics = "0.3.1"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# Windows 版：異常終了のログのバックトレースで行番号が分かるように（exe と同じ場所の .pdb から読む）。
+# ブラウザ版は build.sh が debug=false で作り直して小さくする。
+# パニックは巻き戻す（Windows 版はパニックした対局を記録に残してから落ちる）
+debug = "line-tables-only"

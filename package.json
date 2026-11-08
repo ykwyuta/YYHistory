@@ -1,0 +1,11 @@
+{
+  "name": "yyhistory",
+  "private": true,
+  "version": "0.1.0",
+  "description": "地図を旅して出来事を撮影する歴史写真帳。YYEarthのRust基盤から派生。",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "test": "node --test tools/package_wasm.test.mjs",
+    "preview": "python tools/serve.py"
+  }
+}

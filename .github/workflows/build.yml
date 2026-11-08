@@ -1,0 +1,36 @@
+name: YYHistory
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo test --locked --lib
+      - run: npm test
+      - run: npm run build
+      - run: node tools/wasm-smoke.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yyhistory-web
+          path: dist
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked --lib --features headless
+      - run: cargo build --release --locked --bin yyhistory-win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yyhistory-windows
+          path: |
+            target/release/yyhistory-win.exe
+            README.md
