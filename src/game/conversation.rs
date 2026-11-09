@@ -52,7 +52,8 @@ impl Game {
         // 会話となぜ？ノート（入りきらなければ、なぞって読む）
         let by = y + head;
         let view_h = ch - head - 60.;
-        self.scroll_areas.push(([x, by, cw, view_h], Scroll::Overlay));
+        self.scroll_areas
+            .push(([x, by, cw, view_h], Scroll::Overlay));
         let off = self.scroll[Scroll::Overlay as usize];
         self.gfx.clip_begin(x, by, x + cw, by + view_h);
         let ly = by - off;

@@ -1922,52 +1922,62 @@ impl Game {
             image_tag(&mut self.gfx, x0 + 10. + aw, y1 - 10.);
         }
         let tx0 = x0 + 20. + if aw > 0. { aw + 6. } else { 0. };
+        // 右の操作欄（幅 RIGHT）と文の欄が重ならないようにする
+        const RIGHT: f32 = 330.;
+        let tw = (x1 - tx0 - RIGHT).max(60.);
+        // 集めた数は文の欄の右上に（右の欄の上はクロノの指さしが来る）
+        let pc = PEOPLE.iter().filter(|p| p.era == self.pick).count();
+        let ec = EVENTS.iter().filter(|x| x.era == self.pick).count();
+        let count = format!(
+            "人物 {}/{}　出来事 {}/{}",
+            self.met_count(Some(self.pick)),
+            pc,
+            self.seen_count(Some(self.pick)),
+            ec
+        );
+        let cwid = self.gfx.measure(&count, Font::Small) + 4.;
+        self.text(
+            &count,
+            tx0 + tw - cwid,
+            y0 + 12.,
+            cwid,
+            18.,
+            Font::Small,
+            CYAN,
+        );
         self.text(
             &format!("{}　／　{}", e.years, e.area),
             tx0,
             y0 + 12.,
-            x1 - tx0 - 240.,
+            (tw - cwid - 12.).max(20.),
             18.,
             Font::Small,
             GOLD,
         );
+        let title = format!("{} ― {}", e.name, e.period);
+        let title_h = self.gfx.measure_h(&title, Font::Big, tw).max(26.);
         self.text(
-            &format!("{} ― {}", e.name, e.period),
+            &title,
             tx0,
             y0 + 32.,
-            x1 - tx0 - 240.,
-            26.,
+            tw,
+            title_h,
             Font::Big,
             TEXT,
         );
-        self.gfx.clip_begin(tx0, y0 + 60., x1 - 240., y1 - 8.);
+        // 題が折り返したら、説明はその下から
+        let iy = y0 + 36. + title_h;
+        self.gfx.clip_begin(tx0, iy - 2., tx0 + tw, y1 - 8.);
         self.text(
             e.intro,
             tx0,
-            y0 + 62.,
-            x1 - tx0 - 240.,
-            y1 - y0 - 66.,
+            iy,
+            tw,
+            (y1 - 4. - iy).max(0.),
             Font::Normal,
             MUTED,
         );
         self.gfx.clip_end();
-        let pc = PEOPLE.iter().filter(|p| p.era == self.pick).count();
-        let ec = EVENTS.iter().filter(|x| x.era == self.pick).count();
-        self.text(
-            &format!(
-                "人物 {}/{}　出来事 {}/{}",
-                self.met_count(Some(self.pick)),
-                pc,
-                self.seen_count(Some(self.pick)),
-                ec
-            ),
-            x1 - 230.,
-            y0 + 18.,
-            210.,
-            20.,
-            Font::NormalCenter,
-            CYAN,
-        );
         self.button(
             "転移する",
             [x1 - 220., y0 + 50., 200., 48.],
@@ -1979,20 +1989,21 @@ impl Game {
         self.speaker_button(x1 - 310., y0 + 58.);
         self.button(
             "クロノの説明",
-            [x1 - 310., y0 + 96., 160., 32.],
+            [
+                x1 - 310.,
+                y0 + if compact { 102. } else { 108. },
+                150.,
+                if compact { 28. } else { 32. },
+            ],
             Act::Brief(self.pick),
             false,
         );
         if !compact {
-            self.text(
-                "Enter でも転移できます",
-                x1 - 230.,
-                y0 + 108.,
-                210.,
-                18.,
-                Font::Small,
-                MUTED,
-            );
+            let hint = "Enter でも転移できます";
+            let hw = self.gfx.measure(hint, Font::Small) + 4.;
+            if hw <= 150. {
+                self.text(hint, x1 - 20. - hw, y0 + 116., hw, 18., Font::Small, MUTED);
+            }
         }
     }
 
@@ -4515,8 +4526,17 @@ impl Game {
             if r[1] >= by && r[1] + r[3] <= by + bh {
                 self.button("キャッシュを消して再読み込み", r, Act::ReloadClear, false);
             } else {
-                self.gfx.fill_round(r[0], r[1], r[0] + r[2], r[1] + r[3], 6., PANEL2);
-                self.text("キャッシュを消して再読み込み", r[0] + 4., r[1] + 1., r[2] - 8., r[3] - 2., Font::NormalCenter, TEXT);
+                self.gfx
+                    .fill_round(r[0], r[1], r[0] + r[2], r[1] + r[3], 6., PANEL2);
+                self.text(
+                    "キャッシュを消して再読み込み",
+                    r[0] + 4.,
+                    r[1] + 1.,
+                    r[2] - 8.,
+                    r[3] - 2.,
+                    Font::NormalCenter,
+                    TEXT,
+                );
             }
             extra = 18. + nh + 8. + 38.;
         }

@@ -32,7 +32,11 @@ pub struct Talk {
 
 macro_rules! ask {
     ($q:literal, $how:literal, $a:literal) => {
-        Ask { q: $q, how: $how, a: $a }
+        Ask {
+            q: $q,
+            how: $how,
+            a: $a,
+        }
     };
 }
 
