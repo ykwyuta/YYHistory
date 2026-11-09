@@ -5169,7 +5169,6 @@ mod tests {
         run(&mut g, 10.);
         let mi = person_index("michelangelo").unwrap();
         g.act(Act::Meet(mi));
-        g.act(Act::Ask(2));
         g.render();
         let pieta = notes::index("michelangelo-pieta").unwrap();
         assert!(g

@@ -112,8 +112,7 @@ impl Game {
             }
             yy += h + 10.;
         }
-        let who = PEOPLE[i].name.rsplit('・').next().unwrap_or(PEOPLE[i].name);
-        yy += self.talk_bubble(who, line, x, yy, w, [0.05, 0.08, 0.14, 0.95], draw);
+        yy += self.talk_bubble(t.who, line, x, yy, w, [0.05, 0.08, 0.14, 0.95], draw);
         // 質問（別れぎわには出さない）
         if page <= n {
             yy += 16.;
