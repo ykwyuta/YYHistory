@@ -142,6 +142,8 @@ enum Act {
     StoryBack,
     StorySkip,
     TipsOff,
+    /// キャッシュを消して読み込み直す（ブラウザ版）
+    ReloadClear,
     Replay,
     /// なぜ？ノートを開く・閉じる（ノートの番号）
     Note(usize),
@@ -1034,6 +1036,12 @@ impl Game {
                 }
             }
             Act::StorySkip => self.finish_story(),
+            Act::ReloadClear => {
+                if platform::CAN_RELOAD {
+                    self.notify("キャッシュを消して、読み込み直します…");
+                    platform::reload_clear();
+                }
+            }
             Act::TipsOff => {
                 self.journal.flags ^= FLAG_TIPS_OFF;
                 self.change();
@@ -4488,7 +4496,7 @@ impl Game {
             Font::TitleMid,
             GOLD,
         );
-        let body = "あなたは歴史のなぞを追う「時空探偵」。タイムマシンで昔の時代へ行き、何が起きたのかを調べます。歴史上の人物と話すこともできますが、歴史を変えることはできません。探偵との会話は「時空の復元力」によって歴史から消えてしまうからです。（時空探偵とナビのクロノは物語のキャラクターです。出会う人物と出来事は本当の歴史です）\n\n1　世界地図で行き先の時代を選び、「転移する」でその時代へ渡ります。\n\n2　時代の地図では、場所を押すと道をたどって移動します。矢印キーでも移動できます。「人」の印はまだ会っていない人物、「！」はまだ観察していない出来事のある場所です。\n\n3　人物に「会う」と人物一覧表に、出来事を「観察」すると出来事集と年表に記録されます。\n\n4　その時代の人物と出来事をすべて集めると「アカシックレコードの試練」が始まります。時代についての四択問題5問に全問正解すると、その時代にゆかりのある実在の品が「秘宝」として手に入ります。何度でも挑み直せます。\n\n5　図鑑では、人物一覧表・年表・出来事集・秘宝を見返せます。「未発見も表示」をONにすると、まだ見つけていない項目も読めます（学習用）。\n\n―― 内容の正確さについて ――\n年代・人物・出来事は、各項目に示した史料と研究に基づいてまとめています。日付に諸説あるものや史料によって食い違うものは本文に記しています。和暦の月日は当時の暦（旧暦）のままです。\n人物の言葉は、事実を本人の語りとして再構成した教材であり、「」で示した史料の引用を除いて実際の発言ではありません。人物がいる場所は、その人物にゆかりのある場所です。地図は位置関係を示す概略図で、建物の形や距離は正確ではありません。肖像や場面の画像は、時代考証に基づくイメージ（想像図を含む）です。\n\nF2 図鑑 ／ F3 使い方 ／ F11 全画面 ／ Esc 戻る ／ Enter 次へ・転移";
+        let body = "あなたは歴史のなぞを追う「時空探偵」。タイムマシンで昔の時代へ行き、何が起きたのかを調べます。歴史上の人物と話すこともできますが、歴史を変えることはできません。探偵との会話は「時空の復元力」によって歴史から消えてしまうからです。（時空探偵とナビのクロノは物語のキャラクターです。出会う人物と出来事は本当の歴史です）\n\n1　世界地図で行き先の時代を選び、「転移する」でその時代へ渡ります。\n\n2　時代の地図では、場所を押すと道をたどって移動します。矢印キーでも移動できます。「人」の印はまだ会っていない人物、「！」はまだ観察していない出来事のある場所です。\n\n3　人物に「会う」と人物一覧表に、出来事を「観察」すると出来事集と年表に記録されます。\n\n4　その時代の人物と出来事をすべて集めると「アカシックレコードの試練」が始まります。時代についての四択問題5問に全問正解すると、その時代にゆかりのある実在の品が「秘宝」として手に入ります。何度でも挑み直せます。\n\n5　図鑑では、人物一覧表・年表・出来事集・秘宝を見返せます。「未発見も表示」をONにすると、まだ見つけていない項目も読めます（学習用）。\n\n―― 内容の正確さについて ――\n年代・人物・出来事は、各項目に示した史料と研究に基づいてまとめています。日付に諸説あるものや史料によって食い違うものは本文に記しています。和暦の月日は当時の暦（旧暦）のままです。\n人物の言葉は実際の発言ではありません。会話は、史料に伝わる出来事や人柄をもとに、その人の気持ちを想像して書いたものです。人物がいる場所は、その人物にゆかりのある場所です。地図は位置関係を示す概略図で、建物の形や距離は正確ではありません。肖像や場面の画像は、時代考証に基づくイメージ（想像図を含む）です。\n\nF2 図鑑 ／ F3 使い方 ／ F11 全画面 ／ Esc 戻る ／ Enter 次へ・転移";
         let by = y + 72.;
         let bh = ch - 72. - 62.;
         self.scroll_areas.push(([x, by, cw, bh], Scroll::Overlay));
@@ -4496,8 +4504,24 @@ impl Game {
         let th = self.gfx.measure_h(body, Font::Normal, cw - 64.);
         self.gfx.clip_begin(x, by, x + cw, by + bh);
         self.text(body, x + 32., by - off, cw - 64., th, Font::Normal, TEXT);
+        // 古い版が残って新しくならないとき用（記録は消えない）
+        let mut extra = 0.;
+        if platform::CAN_RELOAD {
+            let ry = by - off + th + 18.;
+            let note = "画面が新しい版にならないときは、キャッシュを消して読み込み直せます。旅の記録は消えません。";
+            let nh = self.gfx.measure_h(note, Font::Small, cw - 64.);
+            self.text(note, x + 32., ry, cw - 64., nh, Font::Small, MUTED);
+            let r = [x + 32., ry + nh + 8., 300., 38.];
+            if r[1] >= by && r[1] + r[3] <= by + bh {
+                self.button("キャッシュを消して再読み込み", r, Act::ReloadClear, false);
+            } else {
+                self.gfx.fill_round(r[0], r[1], r[0] + r[2], r[1] + r[3], 6., PANEL2);
+                self.text("キャッシュを消して再読み込み", r[0] + 4., r[1] + 1., r[2] - 8., r[3] - 2., Font::NormalCenter, TEXT);
+            }
+            extra = 18. + nh + 8. + 38.;
+        }
         self.gfx.clip_end();
-        self.scroll_max[Scroll::Overlay as usize] = th - bh + 10.;
+        self.scroll_max[Scroll::Overlay as usize] = th + extra - bh + 10.;
         self.button(
             "はじめのおはなし",
             [x + 30., y + ch - 50., 190., 36.],
@@ -5284,6 +5308,23 @@ mod tests {
         assert!(g.last_speech.starts_with(PEOPLE[antony].lines[1]));
         g.handle(Ev::Key(0x73, true));
         assert!(g.last_speech.starts_with(PEOPLE[antony].lines[1]));
+    }
+
+    /// 使い方の画面の下に、キャッシュを消して読み込み直すボタンがある（スマートフォンでも届く）
+    #[test]
+    fn help_offers_cache_clearing() {
+        for (w, h, compact) in [(844, 390, true), (1600, 900, false)] {
+            let mut g = game(Gfx::new(w, h));
+            g.gfx.set_compact(compact);
+            g.overlay = Overlay::Help;
+            g.render();
+            g.scroll[Scroll::Overlay as usize] = g.scroll_max[Scroll::Overlay as usize].max(0.);
+            g.render();
+            assert!(
+                g.buttons.iter().any(|b| matches!(b.act, Act::ReloadClear)),
+                "{w}x{h}"
+            );
+        }
     }
 
     /// 転移先の一覧・図鑑・右の欄：項目の上でもなぞればスクロールし、押せば選べる
