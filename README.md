@@ -12,7 +12,7 @@ npm run build
 npm run preview
 ```
 
-ブラウザで http://localhost:8765/ を開きます。Node.js、Rust、プレビュー用のPythonが必要です。npmパッケージのインストールは不要です。Linux/macOSでは `bash build.sh` でもビルドできます。
+ブラウザで http://localhost:8765/ を開きます。Node.js、Rust、プレビュー用のPythonが必要です。npmパッケージのインストールは不要です。Linux/macOSでは `npm run build` が `bash build.sh` を呼び出し、Rustが未導入ならrustupで導入し、WebAssemblyターゲットも用意します（ダウンロードにネット接続が必要です）。WindowsではRustと `wasm32-unknown-unknown` ターゲットを事前に用意してください。
 
 Windows版は `cargo run --release --bin yyhistory-win`。ビルドした実行ファイルは `target/release/yyhistory-win.exe` です。
 

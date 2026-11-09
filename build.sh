@@ -7,13 +7,14 @@ cd "$(dirname "$0")"
 if ! command -v cargo >/dev/null 2>&1; then
   if [ -f "$HOME/.cargo/env" ]; then
     . "$HOME/.cargo/env"
-  else
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
     echo "Rust が無いので rustup で導入する"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
     . "$HOME/.cargo/env"
   fi
 fi
-rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
+rustup target add wasm32-unknown-unknown
 
 # ブラウザ版はゲーム本体（lib）だけを、デバッグ情報なしで作る（Windows 版の設定とは別）
 cargo build --release --lib --target wasm32-unknown-unknown --config profile.release.debug=false
