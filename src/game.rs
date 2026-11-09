@@ -51,7 +51,21 @@ fn era_color(i: usize) -> [f32; 4] {
         [0.80, 0.70, 0.55, 1.],
         [0.70, 0.88, 0.95, 1.],
     ];
-    C[i % C.len()]
+    if i < C.len() {
+        return C[i];
+    }
+    // 18番目からは、色相を黄金角ずつずらして作る
+    let h = (i as f32 * 0.618_034).fract() * 6.;
+    let x = 1. - ((h % 2.) - 1.).abs();
+    let (r, g, b) = match h as u32 {
+        0 => (1., x, 0.),
+        1 => (x, 1., 0.),
+        2 => (0., 1., x),
+        3 => (0., x, 1.),
+        4 => (x, 0., 1.),
+        _ => (1., 0., x),
+    };
+    [0.45 + 0.5 * r, 0.45 + 0.5 * g, 0.45 + 0.5 * b, 1.]
 }
 
 fn mix(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
@@ -1421,10 +1435,10 @@ impl Game {
         let card = if self.gfx.compact { 150. } else { 176. };
         let aw = w - x0;
         let ah = h - top - card;
-        let scale = (aw / 300.).min(ah / 88.);
-        // 経度 -125〜175、緯度 70〜-18 を中心に収める
+        let scale = (aw / 300.).min(ah / 100.);
+        // 経度 -125〜175、緯度 68〜-32 を中心に収める（南アメリカのリオまで入るように）
         let cx = x0 + aw / 2. - 25. * scale;
-        let cy = top + ah / 2. + 26. * scale;
+        let cy = top + ah / 2. + 18. * scale;
         (scale, cx, cy)
     }
     fn atlas_project(&self, lon: f32, lat: f32) -> (f32, f32) {
