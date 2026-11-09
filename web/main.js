@@ -336,7 +336,8 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('pagehide', () => narrator.stop());
 
 const env = {
-  js_speak: (p, l) => narrator.say(str(p, l), ['ja-JP', 'en-US', 'zh-CN'][curLang]),
+  // 本文は日本語だけなので、端末の言語にかかわらず日本語の音声で読む
+  js_speak: (p, l) => narrator.say(str(p, l), 'ja-JP'),
   js_voice_get: () => voiceEnabled ? 1 : 0,
   js_voice_save: (enabled) => {
     voiceEnabled = !!enabled;

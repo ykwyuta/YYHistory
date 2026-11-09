@@ -3,8 +3,14 @@
 //! 世界地図で時代と地域を選んで転移し、その時代の街のミニマップを移動して
 //! 人物に会い、出来事を観察する。出会った人物と観察した出来事は図鑑
 //! （人物一覧表・年表・出来事集）に記録される。
+mod intro;
+mod voice;
+mod warp;
+use intro::{restore_speech, Target};
+
 use crate::{
     gfx::{Font, Gfx, Texture},
+    glossary,
     history::*,
     images, platform, Ev,
 };
@@ -69,6 +75,7 @@ enum Tab {
     Timeline,
     Events,
     Treasures,
+    Words,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -92,6 +99,12 @@ enum Overlay {
     TrialResult(usize, usize),
     /// 秘宝の説明（時代）
     Treasure(usize),
+    /// はじめのおはなしの表紙（ここで押すと、iPad などでも音声が使えるようになる）
+    Title,
+    /// はじめのおはなし（ページ）
+    Story(usize),
+    /// 時空の復元力のはじめての説明（会った人物）
+    Restore(usize),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -120,6 +133,11 @@ enum Act {
     Answer(usize),
     TrialNext,
     Treasure(usize),
+    Story(usize),
+    StoryBack,
+    StorySkip,
+    TipsOff,
+    Replay,
 }
 
 struct Button {
@@ -137,9 +155,30 @@ struct Journal {
     seen: Vec<bool>,
     /// 試練を突破して手に入れた秘宝（時代ごと）
     treasures: Vec<bool>,
+    /// 導入の進み具合（FLAG_*）
+    flags: u8,
+    /// クロノに教わった用語
+    terms: Vec<bool>,
 }
 
-const MAGIC: &[u8; 8] = b"YYHIST\x03\0";
+/// はじめのおはなしを見た
+const FLAG_INTRO: u8 = 1;
+/// 時空の復元力の説明を見た
+const FLAG_RESTORE: u8 = 2;
+/// 地図の上を移動した
+const FLAG_MOVED: u8 = 4;
+/// 図鑑を開いた
+const FLAG_CODEX: u8 = 8;
+/// クロノの案内を出さない
+const FLAG_TIPS_OFF: u8 = 128;
+/// 導入をすべて済ませた
+const FLAGS_DONE: u8 = FLAG_INTRO | FLAG_RESTORE | FLAG_MOVED | FLAG_CODEX;
+
+const MAGIC: &[u8; 8] = b"YYHIST\x05\0";
+/// 用語メモの無い前の版の記録
+const MAGIC_V4: &[u8; 8] = b"YYHIST\x04\0";
+/// 導入の進み具合の無い前の版の記録
+const MAGIC_V3: &[u8; 8] = b"YYHIST\x03\0";
 /// 秘宝の無い前の版の記録
 const MAGIC_V2: &[u8; 8] = b"YYHIST\x02\0";
 
@@ -159,6 +198,8 @@ impl Journal {
             met: vec![false; PEOPLE.len()],
             seen: vec![false; EVENTS.len()],
             treasures: vec![false; ERAS.len()],
+            flags: 0,
+            terms: vec![false; glossary::TERMS.len()],
         }
     }
     fn bytes(&self) -> Vec<u8> {
@@ -167,6 +208,7 @@ impl Journal {
         b.push(self.place as u8);
         b.push(bits(&self.visited));
         b.push(bits(&self.treasures));
+        b.push(self.flags);
         let ids = |list: &mut Vec<u8>, ids: Vec<&str>| {
             list.extend_from_slice(&(ids.len() as u16).to_le_bytes());
             for id in ids {
@@ -192,6 +234,15 @@ impl Journal {
                 .map(|(e, _)| e.id)
                 .collect(),
         );
+        ids(
+            &mut b,
+            glossary::TERMS
+                .iter()
+                .zip(&self.terms)
+                .filter(|(_, m)| **m)
+                .map(|(t, _)| t.name())
+                .collect(),
+        );
         let hash = checksum(&b);
         b.extend_from_slice(&hash.to_le_bytes());
         b
@@ -199,8 +250,11 @@ impl Journal {
     fn read(b: &[u8]) -> Result<Self, String> {
         let invalid =
             || "YYHistoryの記録として読み込めません。現在の記録はそのままです。".to_string();
-        let v3 = b.len() >= 8 && &b[..8] == MAGIC;
-        if b.len() < 19 || b.len() > 65536 || !(v3 || &b[..8] == MAGIC_V2) {
+        let head = if b.len() >= 8 { &b[..8] } else { &[][..] };
+        let v5 = head == MAGIC;
+        let v4 = v5 || head == MAGIC_V4;
+        let v3 = v4 || head == MAGIC_V3;
+        if b.len() < 19 || b.len() > 65536 || !(v3 || head == MAGIC_V2) {
             return Err(invalid());
         }
         let end = b.len() - 4;
@@ -218,7 +272,8 @@ impl Journal {
             return Err(invalid());
         }
         let treasures = (0..ERAS.len()).map(|i| tb & (1 << i) != 0).collect();
-        let mut at = if v3 { 12 } else { 11 };
+        let stored_flags = if v4 { Some(b[12]) } else { None };
+        let mut at = 11 + v3 as usize + v4 as usize;
         let mut list = |find: &dyn Fn(&str) -> Option<usize>, n_all: usize| {
             if at + 2 > end {
                 return Err(invalid());
@@ -246,9 +301,17 @@ impl Journal {
         };
         let met = list(&person_index, PEOPLE.len())?;
         let seen = list(&event_index, EVENTS.len())?;
+        let terms = if v5 {
+            list(&glossary::index, glossary::TERMS.len())?
+        } else {
+            vec![false; glossary::TERMS.len()]
+        };
         if at != end {
             return Err(invalid());
         }
+        // 前の版の記録：もう旅をしていれば導入は済んだものとする
+        let played = met.iter().chain(&seen).any(|x| *x);
+        let flags = stored_flags.unwrap_or(if played { FLAGS_DONE } else { 0 });
         Ok(Self {
             era,
             place,
@@ -256,6 +319,8 @@ impl Journal {
             met,
             seen,
             treasures,
+            flags,
+            terms,
         })
     }
 }
@@ -310,6 +375,20 @@ pub struct Game {
     travel: Option<Travel>,
     /// この起動中に試練の案内を出した時代
     trial_offered: Vec<bool>,
+    /// おはなしのページを開いてからの時間
+    story_t: f32,
+    /// 時空の復元力の演出（会った人物, 経過時間）
+    restore_fx: Option<(usize, f32)>,
+    /// クロノの案内が指す場所（この描画で見つけたもの）
+    targets: Vec<(Target, [f32; 4])>,
+    /// 最後に読み上げた文（声 ON にしたときに読む）
+    last_speech: String,
+    /// 最後に読み上げたクロノの案内
+    last_tip: Option<&'static str>,
+    /// 最後に読み上げを始めた時刻
+    spoke_at: f32,
+    /// いま開いている枠（🔊 ボタンを置く）
+    card_rect: Option<[f32; 4]>,
     voice: bool,
     dirty: bool,
     save_in: f32,
@@ -329,7 +408,7 @@ impl Game {
         let world = gfx.create_texture(w, h, &data).expect("world texture");
         let journal = Journal::new();
         let p = &ERAS[0].places[ERAS[0].start];
-        let mut g = Self {
+        let g = Self {
             gfx,
             world,
             journal,
@@ -356,12 +435,18 @@ impl Game {
             avatar: (p.x, p.y),
             travel: None,
             trial_offered: vec![false; ERAS.len()],
+            story_t: 0.,
+            restore_fx: None,
+            targets: vec![],
+            last_speech: String::new(),
+            last_tip: None,
+            spoke_at: -1.,
+            card_rect: None,
             voice: platform::voice_enabled(),
             dirty: false,
             save_in: 0.,
         };
         platform::load_slot(0);
-        g.notify("行き先の時代を選び、「転移する」でその時代へ渡ろう。");
         g
     }
 
@@ -452,8 +537,22 @@ impl Game {
 
     /// 会話や観察を閉じたとき：その時代の情報がそろったら試練を始める
     fn close_overlay(&mut self) {
-        self.overlay = Overlay::None;
-        platform::speak("");
+        let prev = std::mem::replace(&mut self.overlay, Overlay::None);
+        self.hush();
+        if let Overlay::Meet(i, _) = prev {
+            // 話した記憶は、時空の復元力で歴史から消える
+            if self.journal.flags & FLAG_RESTORE == 0 {
+                self.overlay = Overlay::Restore(i);
+                self.story_t = 0.;
+                self.say(restore_speech(i));
+                return;
+            }
+            self.restore_fx = Some((i, 0.));
+        }
+        if let Overlay::Restore(_) = prev {
+            self.journal.flags |= FLAG_RESTORE;
+            self.change();
+        }
         let era = self.journal.era;
         if self.mode == Mode::Field
             && self.era_complete(era)
@@ -462,11 +561,7 @@ impl Game {
         {
             self.trial_offered[era] = true;
             self.overlay = Overlay::TrialIntro(era);
-            if self.voice {
-                platform::speak(
-                    "この時代の記録はすべて集まった。アカシックレコードの試練が始まる。",
-                );
-            }
+            self.say(voice::trial_intro_speech(era));
         }
     }
 
@@ -512,6 +607,7 @@ impl Game {
             self.handle(*e);
         }
         self.update(dt);
+        self.speak_tip();
         if self.dirty {
             self.save_in -= dt;
             if self.save_in <= 0. {
@@ -523,9 +619,25 @@ impl Game {
     }
 
     fn update(&mut self, dt: f32) {
+        self.story_t += dt;
+        if let Some((_, t)) = &mut self.restore_fx {
+            *t += dt;
+            if *t > intro::RESTORE_FX_SECS {
+                self.restore_fx = None;
+            }
+        }
+        // はじめて遊ぶとき：記録の読み込みを少し待ってから、はじめのおはなしを見せる
+        if self.journal.flags & FLAG_INTRO == 0
+            && self.mode == Mode::Atlas
+            && self.overlay == Overlay::None
+            && self.clock > 0.5
+        {
+            self.overlay = Overlay::Title;
+            self.story_t = 0.;
+        }
         if self.mode == Mode::Shift {
             self.shift_t += dt;
-            if self.shift_t >= 1.6 {
+            if self.shift_t >= warp::SHIFT_SECS {
                 self.arrive();
             }
         }
@@ -553,6 +665,7 @@ impl Game {
                 self.avatar = *tr.points.last().unwrap();
                 self.travel = None;
                 self.journal.place = target;
+                self.journal.flags |= FLAG_MOVED;
                 self.scroll[Scroll::Panel as usize] = 0.;
                 self.change();
                 let place = &ERAS[self.journal.era].places[target];
@@ -562,6 +675,7 @@ impl Game {
                     "{}に着いた。人物{}人・出来事{}件",
                     place.name, people, events
                 ));
+                self.say(voice::place_speech(self.journal.era, target));
             } else {
                 let a = tr.points[tr.at];
                 let b = tr.points[tr.at + 1];
@@ -586,9 +700,7 @@ impl Game {
             "{}・{}に到着。地図の場所を選んで移動しよう。",
             ERAS[era].years, ERAS[era].name
         ));
-        if self.voice {
-            platform::speak(ERAS[era].intro);
-        }
+        self.say(voice::era_speech(era));
     }
 
     fn people_here(&self) -> Vec<usize> {
@@ -671,14 +783,13 @@ impl Game {
             return;
         }
         self.overlay = Overlay::Meet(i, 0);
+        self.scroll[Scroll::Overlay as usize] = 0.;
         if !self.journal.met[i] {
             self.journal.met[i] = true;
             self.notify(&format!("{} を人物一覧表に登録しました。", p.name));
             self.change();
         }
-        if self.voice {
-            platform::speak(p.lines[0]);
-        }
+        self.say(voice::meet_speech(i, 0));
     }
 
     fn observe(&mut self, i: usize) {
@@ -698,9 +809,7 @@ impl Game {
             self.notify(&format!("「{}」を出来事集と年表に記録しました。", e.title));
             self.change();
         }
-        if self.voice {
-            platform::speak(&format!("{}。{}。{}", e.date, e.title, e.body.join("")));
-        }
+        self.say(voice::observe_speech(i));
     }
 
     fn act(&mut self, a: Act) {
@@ -712,15 +821,17 @@ impl Game {
                 self.pick = self.journal.era;
             }
             Act::Codex => {
+                if self.journal.flags & FLAG_CODEX == 0 {
+                    self.journal.flags |= FLAG_CODEX;
+                    self.change();
+                }
                 self.mode = Mode::Codex;
                 self.overlay = Overlay::None;
                 self.scroll[Scroll::Codex as usize] = 0.;
             }
             Act::PickEra(i) => {
                 self.pick = i;
-                if self.voice {
-                    platform::speak(ERAS[i].intro);
-                }
+                self.say(voice::era_speech(i));
             }
             Act::Shift(era, place) => {
                 self.overlay = Overlay::None;
@@ -728,7 +839,7 @@ impl Game {
                 self.shift_t = 0.;
                 self.mode = Mode::Shift;
                 self.travel = None;
-                platform::speak("");
+                self.hush();
             }
             Act::Goto(p) => self.goto(p),
             Act::Meet(i) => self.meet(i),
@@ -737,15 +848,22 @@ impl Game {
                 Overlay::Meet(i, page) => {
                     if page + 1 < PEOPLE[i].lines.len() {
                         self.overlay = Overlay::Meet(i, page + 1);
-                        if self.voice {
-                            platform::speak(PEOPLE[i].lines[page + 1]);
-                        }
+                        self.scroll[Scroll::Overlay as usize] = 0.;
+                        self.say(voice::meet_speech(i, page + 1));
                     } else {
                         self.close_overlay();
                     }
                 }
                 Overlay::None => (),
                 Overlay::TrialIntro(era) => self.act(Act::Begin(era)),
+                Overlay::Title => self.open_story(0),
+                Overlay::Story(page) => {
+                    if page + 1 < intro::PAGES.len() {
+                        self.open_story(page + 1);
+                    } else {
+                        self.finish_story();
+                    }
+                }
                 Overlay::Trial(_, _, Some(_), _) => self.act(Act::TrialNext),
                 Overlay::Trial(..) => (),
                 _ => self.close_overlay(),
@@ -753,6 +871,7 @@ impl Game {
             Act::Prev => {
                 if let Overlay::Meet(i, page) = self.overlay {
                     self.overlay = Overlay::Meet(i, page.saturating_sub(1));
+                    self.scroll[Scroll::Overlay as usize] = 0.;
                 }
             }
             Act::Close => self.close_overlay(),
@@ -774,13 +893,8 @@ impl Game {
                     let quiz = &QUIZZES[quizzes(era)[q]];
                     let ok = k == quiz.answer;
                     self.overlay = Overlay::Trial(era, q, Some(k), score + ok as usize);
-                    if self.voice {
-                        platform::speak(&format!(
-                            "{}。{}",
-                            if ok { "正解" } else { "不正解" },
-                            quiz.note
-                        ));
-                    }
+                    let _ = ok;
+                    self.say(voice::answer_speech(era, q, k));
                 }
             }
             Act::TrialNext => {
@@ -799,19 +913,31 @@ impl Game {
                                 self.notify(&format!("秘宝を手に入れた：{}", treasure(era).name));
                             }
                         }
-                        if self.voice {
-                            platform::speak(&if score == n {
-                                format!("全問正解。秘宝、{}を手に入れた。", treasure(era).name)
-                            } else {
-                                format!("{}問中{}問正解。", n, score)
-                            });
-                        }
+                        self.say(voice::result_speech(era, score));
                     }
                 }
             }
             Act::Treasure(era) => {
                 self.overlay = Overlay::Treasure(era);
                 self.scroll[Scroll::Overlay as usize] = 0.;
+                if self.journal.treasures[era] || self.reveal {
+                    self.say(voice::treasure_speech(era));
+                }
+            }
+            Act::Replay => self.replay(),
+            Act::Story(page) => self.open_story(page),
+            Act::StoryBack => {
+                if let Overlay::Story(page) = self.overlay {
+                    self.open_story(page.saturating_sub(1));
+                }
+            }
+            Act::StorySkip => self.finish_story(),
+            Act::TipsOff => {
+                self.journal.flags ^= FLAG_TIPS_OFF;
+                self.change();
+                if self.journal.flags & FLAG_TIPS_OFF != 0 {
+                    self.notify("クロノの案内を消しました。「使い方」からまた表示できます。");
+                }
             }
             Act::Tab(t) => {
                 self.tab = t;
@@ -824,6 +950,15 @@ impl Game {
             Act::Detail(e) => {
                 self.overlay = Overlay::Detail(e);
                 self.scroll[Scroll::Overlay as usize] = 0.;
+                let known = match e {
+                    Entry::Person(i) => self.journal.met[i],
+                    Entry::Event(i) => self.journal.seen[i],
+                } || self.reveal;
+                if known {
+                    self.say(voice::detail_speech(e));
+                } else {
+                    self.hush();
+                }
             }
             Act::Help => {
                 self.overlay = Overlay::Help;
@@ -832,8 +967,10 @@ impl Game {
             Act::Voice => {
                 self.voice = !self.voice;
                 platform::save_voice(self.voice);
-                if !self.voice {
-                    platform::speak("");
+                if self.voice {
+                    self.replay();
+                } else {
+                    self.hush();
                 }
             }
             Act::Export => {
@@ -846,18 +983,9 @@ impl Game {
         }
     }
 
-    fn speak_question(&self) {
-        if let (true, Overlay::Trial(era, q, None, _)) = (self.voice, self.overlay) {
-            let quiz = &QUIZZES[quizzes(era)[q]];
-            platform::speak(&format!(
-                "第{}問。{}。1、{}。2、{}。3、{}。4、{}。",
-                q + 1,
-                quiz.q,
-                quiz.choices[0],
-                quiz.choices[1],
-                quiz.choices[2],
-                quiz.choices[3]
-            ));
+    fn speak_question(&mut self) {
+        if let Overlay::Trial(era, q, None, _) = self.overlay {
+            self.say(voice::question_speech(era, q));
         }
     }
 
@@ -950,6 +1078,15 @@ impl Game {
                     }
                     return;
                 }
+                if let Overlay::Story(_) | Overlay::Title = self.overlay {
+                    match k {
+                        27 => self.act(Act::StorySkip),
+                        37 | 65 => self.act(Act::StoryBack),
+                        13 | 32 | 39 | 68 => self.act(Act::Next),
+                        _ => (),
+                    }
+                    return;
+                }
                 if let Overlay::Trial(_, _, None, _) = self.overlay {
                     match k {
                         49..=52 => return self.act(Act::Answer((k - 49) as usize)),
@@ -982,7 +1119,7 @@ impl Game {
                         if let Overlay::Meet(..) = self.overlay {
                             self.act(Act::Prev);
                         } else if self.mode == Mode::Atlas {
-                            self.pick = (self.pick + ERAS.len() - 1) % ERAS.len();
+                            self.act(Act::PickEra((self.pick + ERAS.len() - 1) % ERAS.len()));
                         } else {
                             self.step(-1., 0.);
                         }
@@ -991,26 +1128,27 @@ impl Game {
                         if let Overlay::Meet(..) = self.overlay {
                             self.act(Act::Next);
                         } else if self.mode == Mode::Atlas {
-                            self.pick = (self.pick + 1) % ERAS.len();
+                            self.act(Act::PickEra((self.pick + 1) % ERAS.len()));
                         } else {
                             self.step(1., 0.);
                         }
                     }
                     38 | 87 => {
                         if self.mode == Mode::Atlas {
-                            self.pick = (self.pick + ERAS.len() - 1) % ERAS.len();
+                            self.act(Act::PickEra((self.pick + ERAS.len() - 1) % ERAS.len()));
                         } else {
                             self.step(0., -1.);
                         }
                     }
                     40 | 83 => {
                         if self.mode == Mode::Atlas {
-                            self.pick = (self.pick + 1) % ERAS.len();
+                            self.act(Act::PickEra((self.pick + 1) % ERAS.len()));
                         } else {
                             self.step(0., 1.);
                         }
                     }
                     0x71 => self.act(Act::Codex),
+                    0x73 => self.act(Act::Replay),
                     0x72 => self.act(Act::Help),
                     0x7a => self.gfx.toggle_fullscreen(),
                     _ => (),
@@ -1046,10 +1184,11 @@ impl Game {
         }
         self.searching = false;
         if self.overlay != Overlay::None {
-            // 会話の枠の外を押したら次へ進む
-            if let Overlay::Meet(..) = self.overlay {
+            // 会話・おはなしの枠の外を押したら次へ進む
+            if let Overlay::Meet(..) | Overlay::Story(_) | Overlay::Restore(_) = self.overlay {
                 self.act(Act::Next);
             }
+            // 表紙は「はじめる」のボタンで進む（最初のタップで読み上げを始めるため）
             return;
         }
         if self.mode == Mode::Field {
@@ -1232,11 +1371,17 @@ impl Game {
     fn render(&mut self) {
         self.buttons.clear();
         self.scroll_areas.clear();
+        self.targets.clear();
+        self.card_rect = None;
         let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
         self.gfx.begin(NIGHT);
         self.gfx.set_screen_xform();
         match self.mode {
-            Mode::Atlas | Mode::Shift => self.atlas_geometry(),
+            Mode::Atlas => self.atlas_geometry(),
+            Mode::Shift => {
+                self.atlas_geometry();
+                self.shift_geometry();
+            }
             Mode::Field => self.field_geometry(),
             Mode::Codex => (),
         }
@@ -1246,15 +1391,15 @@ impl Game {
         }
         match self.mode {
             Mode::Atlas => self.atlas_ui(),
-            Mode::Shift => {
-                self.atlas_ui();
-                self.buttons.clear();
-                self.scroll_areas.clear();
-            }
+            Mode::Shift => (),
             Mode::Field => self.field_ui(),
             Mode::Codex => self.codex_ui(),
         }
         self.top_bar();
+        if self.overlay == Overlay::None && self.mode != Mode::Shift {
+            self.restore_ui();
+            self.tip_ui();
+        }
         if self.overlay != Overlay::None || self.mode == Mode::Shift {
             self.buttons.clear();
             self.scroll_areas.clear();
@@ -1269,11 +1414,30 @@ impl Game {
             Overlay::Trial(era, q, pick, score) => self.trial_ui(era, q, pick, score),
             Overlay::TrialResult(era, score) => self.trial_result_ui(era, score),
             Overlay::Treasure(era) => self.treasure_ui(era),
+            Overlay::Story(page) => self.story_ui(page),
+            Overlay::Title => self.title_ui(),
+            Overlay::Restore(i) => self.restore_explain_ui(i),
+        }
+        // 開いている枠の右上に 🔊（おはなしと復元力の説明は、それぞれの画面に置く）
+        if let (Some(r), false) = (
+            self.card_rect,
+            matches!(
+                self.overlay,
+                Overlay::Help | Overlay::Title | Overlay::Story(_) | Overlay::Restore(_)
+            ),
+        ) {
+            self.speaker_button(r[0] + r[2] - 96., r[1] + 12.);
         }
         if self.mode == Mode::Shift {
             self.shift_ui();
         }
-        if self.toast_left > 0. && self.mode != Mode::Shift {
+        if self.toast_left > 0.
+            && self.mode != Mode::Shift
+            && !matches!(
+                self.overlay,
+                Overlay::Title | Overlay::Story(_) | Overlay::Restore(_)
+            )
+        {
             let tw = (w * 0.55).min(640.);
             let tx = (w - tw) / 2.;
             let ty = if self.gfx.compact {
@@ -1324,15 +1488,7 @@ impl Game {
             GOLD,
         );
         if !compact {
-            self.text(
-                "時空を渡り、歴史に出会う",
-                20.,
-                40.,
-                220.,
-                16.,
-                Font::Small,
-                MUTED,
-            );
+            self.text("時空探偵の事件簿", 20., 40., 220., 16., Font::Small, MUTED);
         }
         let bh = if compact { 32. } else { 36. };
         let by = (top - bh) / 2. - 1.;
@@ -1347,6 +1503,9 @@ impl Game {
         ];
         for (label, a, on) in tabs {
             self.button(label, [x, by, 96., bh], a, on);
+            if let Act::Codex = a {
+                self.targets.push((Target::Codex, [x, by, 96., bh]));
+            }
             x += 104.;
         }
         if self.journal.visited.iter().any(|v| *v) && self.mode != Mode::Field {
@@ -1685,6 +1844,9 @@ impl Game {
             Act::Shift(self.pick, None),
             true,
         );
+        self.targets
+            .push((Target::Shift, [x1 - 220., y0 + 50., 200., 48.]));
+        self.speaker_button(x1 - 310., y0 + 58.);
         if !compact {
             self.text(
                 "Enter でも転移できます",
@@ -1700,77 +1862,58 @@ impl Game {
 
     fn shift_ui(&mut self) {
         let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
-        let t = (self.shift_t / 1.6).clamp(0., 1.);
-        let fade = if t < 0.15 {
-            t / 0.15
-        } else if t > 0.85 {
-            (1. - t) / 0.15
-        } else {
-            1.
-        };
-        self.gfx
-            .fill_rect(0., 0., w, h, [0.02, 0.04, 0.09, 0.92 * fade]);
+        let t = (self.shift_t / warp::SHIFT_SECS).clamp(0., 1.);
+        let fade = (t / 0.12).min(1.) * ((1. - t) / 0.12).min(1.);
+        // 最後に光に包まれて、転移先の景色が浮かび上がる
+        let flash = (1. - ((t - 0.74) / 0.08).abs()).clamp(0., 1.);
+        let arrive = ((t - 0.74) / 0.2).clamp(0., 1.);
         if let Some(img) = self.gfx.image(&images::era_art(self.shift_to.0)) {
-            // 転移先の景色が、だんだん浮かび上がる
-            cover(
-                &mut self.gfx,
-                &img,
-                [0., 0., w, h],
-                16. / 9.,
-                0.75 * fade * t.powf(0.7),
-            );
+            cover(&mut self.gfx, &img, [0., 0., w, h], 16. / 9., arrive);
+        } else {
+            self.gfx
+                .fill_rect(0., 0., w, h, [0.05, 0.08, 0.14, arrive * 0.9]);
         }
-        let (cx, cy) = (w / 2., h / 2.);
-        for k in 0..7 {
-            let p = ((t * 1.8 + k as f32 / 7.) % 1.).powf(1.4);
-            let r = 20. + p * w.max(h) * 0.6;
-            self.gfx.stroke_circle(
-                cx,
-                cy,
-                r,
-                2. + 3. * (1. - p),
-                alpha(mix(CYAN, GOLD, k as f32 / 7.), (1. - p) * fade),
-            );
-        }
+        self.gfx.fill_rect(0., 0., w, h, [1., 1., 1., flash * 0.85]);
         let (era, _) = self.shift_to;
         let e = &ERAS[era];
+        let (cx, cy) = (w / 2., h * 0.78);
+        self.gfx.fill_round(
+            cx - 320.,
+            cy - 76.,
+            cx + 320.,
+            cy + 74.,
+            16.,
+            [0.03, 0.04, 0.12, 0.55 * fade],
+        );
         self.text(
             "時 空 転 移",
             cx - 300.,
-            cy - 92.,
+            cy - 70.,
             600.,
-            40.,
+            44.,
             Font::Title,
             alpha(CYAN, fade),
         );
         self.text(
-            e.years,
+            &format!("{}　{}", e.years, e.name),
             cx - 300.,
-            cy - 30.,
+            cy - 18.,
             600.,
             30.,
             Font::BigCenter,
             alpha(GOLD, fade),
         );
+        let n = (self.shift_t * 8.) as usize;
         self.text(
-            &format!("{} ― {}", e.name, e.area),
+            &format!("じかんを さかのぼっています{}", "・".repeat(n % 4)),
             cx - 300.,
-            cy + 6.,
+            cy + 20.,
             600.,
-            30.,
-            Font::BigCenter,
+            24.,
+            Font::NormalCenter,
             alpha(TEXT, fade),
         );
-        let n = (t * 24.) as usize;
-        self.text(
-            &format!("座標固定中{}", "・".repeat(n % 4)),
-            cx - 300.,
-            cy + 56.,
-            600.,
-            22.,
-            Font::NormalCenter,
-            alpha(MUTED, fade),
-        );
+        let _ = h;
     }
 
     // -------------------------------------------------------------- ミニマップ
@@ -2076,6 +2219,8 @@ impl Game {
                 self.gfx.stroke_circle(bx, y - 16., 9. * b, 1.5, TEXT);
                 self.text("！", bx - 9., y - 25., 18., 18., Font::NormalCenter, TEXT);
             }
+            self.targets
+                .push((Target::Place(i), [x - 22., y - 22., 44., 44.]));
             self.buttons.push(Button {
                 rect: [x - 22., y - 22., 44., 44.],
                 act: Act::Goto(i),
@@ -2107,7 +2252,8 @@ impl Game {
             Font::Small,
             GOLD,
         );
-        self.text(era.name, ix, y0 + 30., iw, 26., Font::Big, TEXT);
+        self.text(era.name, ix, y0 + 30., iw - 90., 26., Font::Big, TEXT);
+        self.speaker_button(ix + iw - 76., y0 + 26.);
         let pc = PEOPLE.iter().filter(|p| p.era == ei).count();
         let ec = EVENTS.iter().filter(|x| x.era == ei).count();
         self.text(
@@ -2280,6 +2426,7 @@ impl Game {
                     rect: rr,
                     act: Act::Meet(i),
                 });
+                self.targets.push((Target::Person(i), rr));
                 y += 56.;
             }
             y += 8.;
@@ -2352,6 +2499,7 @@ impl Game {
                     rect: rr,
                     act: Act::Observe(i),
                 });
+                self.targets.push((Target::Event(i), rr));
                 y += 52.;
             }
         }
@@ -2394,13 +2542,26 @@ impl Game {
         let x = (w - cw) / 2.;
         let y = (h - ch) / 2.;
         self.panel_box(x, y, x + cw, y + ch);
+        self.card_rect = Some([x, y, cw, ch]);
         [x, y, cw, ch]
     }
 
     fn meet_ui(&mut self, i: usize, page: usize) {
         let p = &PEOPLE[i];
         let compact = self.gfx.compact;
-        let [x, y, cw, ch] = self.card(860., if compact { 420. } else { 470. });
+        let line = p.lines[page.min(p.lines.len() - 1)];
+        // はじめのページでは、肩書きに出てくる用語も説明する
+        let terms = glossary::find(&if page == 0 {
+            format!("{}{}", p.role, line)
+        } else {
+            line.to_string()
+        });
+        let cw0 = 860.0f32.min(self.gfx.width as f32 - 32.);
+        let head = if compact { 150. } else { 170. };
+        let lh = (self.gfx.measure_h(line, Font::Big, cw0 - 92.) + 48.).max(96.);
+        let mh = self.memo_h(&terms, cw0 - 48.);
+        let need = head + lh + if mh > 0. { mh + 12. } else { 0. } + 96.;
+        let [x, y, cw, ch] = self.card(860., need);
         let mr = if compact { 44. } else { 58. };
         self.medallion(
             p.name,
@@ -2424,30 +2585,38 @@ impl Game {
         self.text(p.name, tx, y + 44., tw, 28., Font::Big, TEXT);
         self.text(p.native, tx, y + 74., tw, 18., Font::Small, MUTED);
         self.text(p.role, tx, y + 96., tw, 20., Font::Normal, CYAN);
-        // 言葉
-        let by = y + if compact { 150. } else { 170. };
-        let bh = ch - (by - y) - 96.;
+        // 言葉とことばメモ（入りきらなければ、なぞって読む）
+        let by = y + head;
+        let view_h = ch - head - 96.;
+        self.scroll_areas
+            .push(([x, by, cw, view_h], Scroll::Overlay));
+        let off = self.scroll[Scroll::Overlay as usize];
+        self.gfx.clip_begin(x, by, x + cw, by + view_h);
+        let ly = by - off;
         self.gfx.fill_round(
             x + 24.,
-            by,
+            ly,
             x + cw - 24.,
-            by + bh,
+            ly + lh,
             8.,
             [0.05, 0.08, 0.14, 0.95],
         );
         self.gfx
-            .stroke_round(x + 24., by, x + cw - 24., by + bh, 8., 1., alpha(GOLD, 0.6));
-        let line = p.lines[page.min(p.lines.len() - 1)];
-        self.text(line, x + 46., by + 18., cw - 92., bh - 30., Font::Big, TEXT);
+            .stroke_round(x + 24., ly, x + cw - 24., ly + lh, 8., 1., alpha(GOLD, 0.6));
+        self.text(line, x + 46., ly + 18., cw - 92., lh - 30., Font::Big, TEXT);
         self.text(
             &format!("{} / {}", page + 1, p.lines.len()),
             x + cw - 120.,
-            by + bh - 26.,
+            ly + lh - 24.,
             80.,
             18.,
             Font::Small,
             MUTED,
         );
+        let mh = self.memo(&terms, x + 24., ly + lh + 12., cw - 48.);
+        self.gfx.clip_end();
+        self.scroll_max[Scroll::Overlay as usize] =
+            lh + if mh > 0. { mh + 12. } else { 0. } - view_h;
         self.text(
             "※人物の言葉は、史料に基づく事実を本人の語りとして再構成したものです。「」内の史料の引用を除き、実際の発言ではありません。",
             x + 26., y + ch - 84., cw - 52., 34., Font::Small, MUTED,
@@ -2509,6 +2678,11 @@ impl Game {
             need += 64.;
         }
         need += self.banner_h(i, tw);
+        let terms = glossary::find(&e.body.join(""));
+        let mh = self.memo_h(&terms, tw);
+        if mh > 0. {
+            need += mh + 12.;
+        }
         let [x, y, cw, ch] = self.card(860., need.max(320.));
         let place = place_index(e.era, e.place)
             .map(|k| ERAS[e.era].places[k].name)
@@ -2544,6 +2718,10 @@ impl Game {
             let ph = self.gfx.measure_h(para, Font::Normal, tw);
             self.text(para, x + 30., yy, tw, ph, Font::Normal, TEXT);
             yy += ph + 10.;
+        }
+        let mh = self.memo(&terms, x + 30., yy, tw);
+        if mh > 0. {
+            yy += mh + 12.;
         }
         if !e.people.is_empty() {
             self.text(
@@ -2667,8 +2845,9 @@ impl Game {
             ("年表", Tab::Timeline),
             ("出来事集", Tab::Events),
             ("秘宝", Tab::Treasures),
+            ("ことば", Tab::Words),
         ];
-        let tw = if compact { 112. } else { 140. };
+        let tw = if compact { 96. } else { 136. };
         for (k, (label, t)) in tabs.iter().enumerate() {
             self.button(
                 label,
@@ -2720,7 +2899,7 @@ impl Game {
             rect: sb,
             act: Act::Search,
         });
-        let rx = 16. + 4. * (tw + 8.);
+        let rx = 16. + 5. * (tw + 8.);
         if sx - rx > 150. {
             self.button(
                 if self.reveal {
@@ -2785,6 +2964,7 @@ impl Game {
             Tab::Timeline => self.codex_timeline(gy - off, w, gy, h),
             Tab::Events => self.codex_events(gy - off, w, gy, h),
             Tab::Treasures => self.codex_treasures(gy - off, w, gy, h),
+            Tab::Words => self.codex_words(gy - off, w, gy, h),
         };
         self.gfx.clip_end();
         self.scroll_max[Scroll::Codex as usize] = content - view[3] + 20.;
@@ -2911,6 +3091,102 @@ impl Game {
             );
         }
         28. + (items.len().div_ceil(cols)) as f32 * (ch + 10.)
+    }
+
+    fn codex_words(&mut self, y0: f32, w: f32, vy0: f32, vy1: f32) -> f32 {
+        let q = self.query.clone();
+        let items: Vec<usize> = (0..glossary::TERMS.len())
+            .filter(|i| {
+                let t = &glossary::TERMS[*i];
+                q.is_empty()
+                    || ((self.journal.terms[*i] || self.reveal)
+                        && contains(&[t.name(), t.kana, t.kid], &q))
+            })
+            .collect();
+        let learned = self.journal.terms.iter().filter(|t| **t).count();
+        self.text(
+            &format!(
+                "クロノに おそわった ことば {}/{}　（人物の話や出来事に出てきた用語を、クロノがやさしく説明します）",
+                learned,
+                glossary::TERMS.len()
+            ),
+            18.,
+            y0 + 2.,
+            w - 36.,
+            20.,
+            Font::Normal,
+            CYAN,
+        );
+        let cols = (((w - 32.) / 330.) as usize).max(2);
+        let cw = (w - 32. - (cols - 1) as f32 * 10.) / cols as f32;
+        let ch = 118.;
+        let y0 = y0 + 28.;
+        for (k, i) in items.iter().enumerate() {
+            let x = 16. + (k % cols) as f32 * (cw + 10.);
+            let y = y0 + (k / cols) as f32 * (ch + 10.);
+            if y + ch < vy0 || y > vy1 {
+                continue;
+            }
+            let t = &glossary::TERMS[*i];
+            let found = self.journal.terms[*i];
+            let known = found || self.reveal;
+            self.gfx.fill_round(
+                x,
+                y,
+                x + cw,
+                y + ch,
+                8.,
+                if known {
+                    [0.98, 0.96, 0.89, 1.]
+                } else {
+                    [0.09, 0.12, 0.19, 1.]
+                },
+            );
+            self.gfx.stroke_round(
+                x,
+                y,
+                x + cw,
+                y + ch,
+                8.,
+                1.,
+                if found { CYAN } else { alpha(LOCKED, 0.7) },
+            );
+            if known {
+                self.text(
+                    &format!("{}（{}）", t.name(), t.kana),
+                    x + 14.,
+                    y + 10.,
+                    cw - 28.,
+                    24.,
+                    Font::Big,
+                    INK,
+                );
+                self.gfx
+                    .clip_begin(x, y.max(vy0), x + cw, (y + ch - 6.).min(vy1));
+                self.text(
+                    t.kid,
+                    x + 14.,
+                    y + 38.,
+                    cw - 28.,
+                    ch - 44.,
+                    Font::Normal,
+                    INK_SOFT,
+                );
+                self.gfx.clip_end();
+            } else {
+                self.text("？？？", x + 14., y + 10., cw - 28., 24., Font::Big, MUTED);
+                self.text(
+                    "人物の話や出来事の中に出てくると、クロノが教えてくれる",
+                    x + 14.,
+                    y + 40.,
+                    cw - 28.,
+                    40.,
+                    Font::Small,
+                    LOCKED,
+                );
+            }
+        }
+        28. + items.len().div_ceil(cols) as f32 * (ch + 10.)
     }
 
     fn codex_treasures(&mut self, y0: f32, w: f32, vy0: f32, vy1: f32) -> f32 {
@@ -3091,6 +3367,7 @@ impl Game {
             1.,
             alpha(GOLD, 0.5),
         );
+        self.card_rect = Some([x, y, cw, ch]);
         [x, y, cw, ch]
     }
 
@@ -3159,7 +3436,14 @@ impl Game {
         let cw0 = 860.0f32.min(self.gfx.width as f32 - 32.);
         let qh = self.gfx.measure_h(quiz.q, Font::Big, cw0 - 60.).max(26.);
         let nh = self.gfx.measure_h(quiz.note, Font::Normal, cw0 - 60.) + 24.;
-        let need = 46. + 18. + qh + 4. * row + 34. + nh + 64.;
+        // 答えたあとで、問題に出てきた用語をクロノが説明する（答えの手がかりにならないように）
+        let terms = if pick.is_some() {
+            glossary::find(&format!("{}{}{}", quiz.q, quiz.choices.join(""), quiz.note))
+        } else {
+            vec![]
+        };
+        let mh = self.memo_h(&terms, cw0 - 60.);
+        let need = 46. + 18. + qh + 4. * row + 34. + nh + 64. + if mh > 0. { mh + 10. } else { 0. };
         let [x, y, cw, ch] = self.trial_card(860., need);
         self.text(
             &format!(
@@ -3170,7 +3454,7 @@ impl Game {
             ),
             x + 30.,
             y + 18.,
-            cw - 160.,
+            cw - 260.,
             20.,
             Font::Normal,
             CYAN,
@@ -3189,7 +3473,7 @@ impl Game {
         );
         // 進み具合
         for k in 0..list.len() {
-            let cx = x + cw - 40. - (list.len() - 1 - k) as f32 * 20.;
+            let cx = x + cw - 124. - (list.len() - 1 - k) as f32 * 20.;
             let c = if k < q || (k == q && pick.is_some()) {
                 GOLD
             } else if k == q {
@@ -3263,15 +3547,9 @@ impl Game {
             } else {
                 format!("正解は「{}」。{}", quiz.choices[quiz.answer], quiz.note)
             };
-            self.text(
-                &note,
-                x + 30.,
-                ny + 28.,
-                cw - 60.,
-                y + ch - 60. - ny - 28.,
-                Font::Normal,
-                MUTED,
-            );
+            let nh = self.gfx.measure_h(&note, Font::Normal, cw - 60.);
+            self.text(&note, x + 30., ny + 28., cw - 60., nh, Font::Normal, MUTED);
+            self.memo(&terms, x + 30., ny + 28. + nh + 10., cw - 60.);
             let last = q + 1 >= list.len();
             self.button(
                 if last {
@@ -3905,10 +4183,15 @@ impl Game {
                         .collect(),
                 ),
             };
+            let terms = glossary::find(&paras.join(""));
             for para in paras {
                 let ph = self.gfx.measure_h(para, Font::Normal, tw);
                 self.text(para, x + 30., yy, tw, ph, Font::Normal, TEXT);
                 yy += ph + 10.;
+            }
+            let mh = self.memo(&terms, x + 30., yy, tw);
+            if mh > 0. {
+                yy += mh + 12.;
             }
             self.text(
                 &format!("ゆかりの場所：{}（{}）", place_name, ERAS[era].area),
@@ -4030,6 +4313,11 @@ impl Game {
             return head + 120.;
         }
         let mut need = head + 6. + 28. + 60. + 16.;
+        let terms = glossary::find(&paras.join(""));
+        let mh = self.memo_h(&terms, tw);
+        if mh > 0. {
+            need += mh + 12.;
+        }
         if let Entry::Event(i) = e {
             need += self.banner_h(i, tw);
         }
@@ -4053,7 +4341,7 @@ impl Game {
             Font::TitleMid,
             GOLD,
         );
-        let body = "1　世界地図で行き先の時代を選び、「転移する」でその時代へ渡ります。\n\n2　時代の地図では、場所を押すと道をたどって移動します。矢印キーでも移動できます。「人」の印はまだ会っていない人物、「！」はまだ観察していない出来事のある場所です。\n\n3　人物に「会う」と人物一覧表に、出来事を「観察」すると出来事集と年表に記録されます。\n\n4　その時代の人物と出来事をすべて集めると「アカシックレコードの試練」が始まります。時代についての四択問題5問に全問正解すると、その時代にゆかりのある実在の品が「秘宝」として手に入ります。何度でも挑み直せます。\n\n5　図鑑では、人物一覧表・年表・出来事集・秘宝を見返せます。「未発見も表示」をONにすると、まだ見つけていない項目も読めます（学習用）。\n\n―― 内容の正確さについて ――\n年代・人物・出来事は、各項目に示した史料と研究に基づいてまとめています。日付に諸説あるものや史料によって食い違うものは本文に記しています。和暦の月日は当時の暦（旧暦）のままです。\n人物の言葉は、事実を本人の語りとして再構成した教材であり、「」で示した史料の引用を除いて実際の発言ではありません。人物がいる場所は、その人物にゆかりのある場所です。地図は位置関係を示す概略図で、建物の形や距離は正確ではありません。肖像や場面の画像は、時代考証に基づくイメージ（想像図を含む）です。\n\nF2 図鑑 ／ F3 使い方 ／ F11 全画面 ／ Esc 戻る ／ Enter 次へ・転移";
+        let body = "あなたは歴史のなぞを追う「時空探偵」。タイムマシンで昔の時代へ行き、何が起きたのかを調べます。歴史上の人物と話すこともできますが、歴史を変えることはできません。探偵との会話は「時空の復元力」によって歴史から消えてしまうからです。（時空探偵とナビのクロノは物語のキャラクターです。出会う人物と出来事は本当の歴史です）\n\n1　世界地図で行き先の時代を選び、「転移する」でその時代へ渡ります。\n\n2　時代の地図では、場所を押すと道をたどって移動します。矢印キーでも移動できます。「人」の印はまだ会っていない人物、「！」はまだ観察していない出来事のある場所です。\n\n3　人物に「会う」と人物一覧表に、出来事を「観察」すると出来事集と年表に記録されます。\n\n4　その時代の人物と出来事をすべて集めると「アカシックレコードの試練」が始まります。時代についての四択問題5問に全問正解すると、その時代にゆかりのある実在の品が「秘宝」として手に入ります。何度でも挑み直せます。\n\n5　図鑑では、人物一覧表・年表・出来事集・秘宝を見返せます。「未発見も表示」をONにすると、まだ見つけていない項目も読めます（学習用）。\n\n―― 内容の正確さについて ――\n年代・人物・出来事は、各項目に示した史料と研究に基づいてまとめています。日付に諸説あるものや史料によって食い違うものは本文に記しています。和暦の月日は当時の暦（旧暦）のままです。\n人物の言葉は、事実を本人の語りとして再構成した教材であり、「」で示した史料の引用を除いて実際の発言ではありません。人物がいる場所は、その人物にゆかりのある場所です。地図は位置関係を示す概略図で、建物の形や距離は正確ではありません。肖像や場面の画像は、時代考証に基づくイメージ（想像図を含む）です。\n\nF2 図鑑 ／ F3 使い方 ／ F11 全画面 ／ Esc 戻る ／ Enter 次へ・転移";
         let by = y + 72.;
         let bh = ch - 72. - 62.;
         self.scroll_areas.push(([x, by, cw, bh], Scroll::Overlay));
@@ -4064,8 +4352,25 @@ impl Game {
         self.gfx.clip_end();
         self.scroll_max[Scroll::Overlay as usize] = th - bh + 10.;
         self.button(
+            "はじめのおはなし",
+            [x + 30., y + ch - 50., 190., 36.],
+            Act::Story(0),
+            false,
+        );
+        let tips_off = self.journal.flags & FLAG_TIPS_OFF != 0;
+        self.button(
+            if tips_off {
+                "クロノの案内：OFF"
+            } else {
+                "クロノの案内：ON"
+            },
+            [x + 230., y + ch - 50., 190., 36.],
+            Act::TipsOff,
+            !tips_off,
+        );
+        self.button(
             "旅に戻る",
-            [x + cw / 2. - 120., y + ch - 50., 240., 36.],
+            [x + cw - 230., y + ch - 50., 200., 36.],
             Act::Close,
             true,
         );
@@ -4398,6 +4703,13 @@ fn icon(g: &mut Gfx, kind: Kind, x: f32, y: f32, s: f32) {
 mod tests {
     use super::*;
 
+    /// 導入を済ませた状態のゲーム（ほかの機能を調べるため）
+    fn game(gfx: Gfx) -> Game {
+        let mut g = Game::new(gfx);
+        g.journal.flags = FLAGS_DONE;
+        g
+    }
+
     fn run(g: &mut Game, secs: f32) {
         let mut t = 0.;
         while t < secs {
@@ -4427,12 +4739,12 @@ mod tests {
 
     #[test]
     fn every_person_and_event_can_be_found() {
-        let mut g = Game::new(Gfx::new(1600, 900));
+        let mut g = game(Gfx::new(1600, 900));
         for era in 0..ERAS.len() {
             g.act(Act::PickEra(era));
             g.act(Act::Shift(era, None));
             assert_eq!(g.mode, Mode::Shift);
-            run(&mut g, 2.);
+            run(&mut g, warp::SHIFT_SECS + 0.2);
             assert_eq!(g.mode, Mode::Field);
             assert_eq!(g.journal.era, era);
             for place in 0..ERAS[era].places.len() {
@@ -4501,9 +4813,9 @@ mod tests {
 
     #[test]
     fn trial_needs_everything_and_a_perfect_score() {
-        let mut g = Game::new(Gfx::new(1600, 900));
+        let mut g = game(Gfx::new(1600, 900));
         g.act(Act::Shift(EDO, None));
-        run(&mut g, 2.);
+        run(&mut g, warp::SHIFT_SECS + 0.2);
         g.act(Act::TrialIntro(EDO));
         assert_eq!(g.overlay, Overlay::None);
         g.act(Act::Begin(EDO));
@@ -4542,13 +4854,266 @@ mod tests {
     }
 
     #[test]
+    fn first_launch_tells_the_story_then_guides() {
+        let mut g = Game::new(Gfx::new(1600, 900));
+        run(&mut g, 1.);
+        // 表紙：最初のタップは「はじめる」。ここで iPad などの音声も使えるようになる
+        assert_eq!(g.overlay, Overlay::Title);
+        g.render();
+        assert!(g.buttons.iter().any(|b| matches!(b.act, Act::Next)));
+        g.click(10., 10.);
+        assert_eq!(
+            g.overlay,
+            Overlay::Title,
+            "a stray tap does not skip the first page"
+        );
+        g.handle(Ev::Key(13, true));
+        assert_eq!(g.overlay, Overlay::Story(0));
+        assert!(g.last_speech.starts_with(intro::PAGES[0].title));
+        for page in 1..intro::PAGES.len() {
+            g.handle(Ev::Key(13, true));
+            assert_eq!(g.overlay, Overlay::Story(page));
+            g.render();
+        }
+        g.act(Act::StoryBack);
+        assert_eq!(g.overlay, Overlay::Story(intro::PAGES.len() - 2));
+        g.handle(Ev::Key(13, true));
+        g.handle(Ev::Key(13, true));
+        assert_eq!(g.overlay, Overlay::None);
+        assert!(g.journal.flags & FLAG_INTRO != 0);
+        run(&mut g, 1.);
+        assert_eq!(g.overlay, Overlay::None, "the story is shown only once");
+        // クロノが「転移する」を指す
+        assert_eq!(g.current_tip().unwrap().1, Some(intro::Target::Shift));
+        assert!(g.targets.iter().any(|(t, _)| *t == intro::Target::Shift));
+        g.act(Act::Shift(ROME, None));
+        run(&mut g, warp::SHIFT_SECS + 0.2);
+        // フォルムにはアントニウスがいる
+        let antony = person_index("antony").unwrap();
+        assert_eq!(
+            g.current_tip().unwrap().1,
+            Some(intro::Target::Person(antony))
+        );
+        g.act(Act::Meet(antony));
+        for _ in 0..PEOPLE[antony].lines.len() {
+            g.act(Act::Next);
+        }
+        // はじめての会話のあとは、時空の復元力の説明
+        assert_eq!(g.overlay, Overlay::Restore(antony));
+        g.render();
+        g.act(Act::Next);
+        assert_eq!(g.overlay, Overlay::None);
+        assert!(g.journal.flags & FLAG_RESTORE != 0);
+        // 2回目からは、操作を止めない短い演出
+        let cicero = person_index("cicero").unwrap();
+        g.act(Act::Goto(place_index(ROME, "palatine").unwrap()));
+        run(&mut g, 10.);
+        g.act(Act::Meet(cicero));
+        for _ in 0..PEOPLE[cicero].lines.len() {
+            g.act(Act::Next);
+        }
+        assert_eq!(g.overlay, Overlay::None);
+        assert!(g.restore_fx.is_some());
+        g.render();
+        run(&mut g, intro::RESTORE_FX_SECS + 0.2);
+        assert!(g.restore_fx.is_none());
+        // 次は出来事の場所へ案内
+        assert!(matches!(
+            g.current_tip().unwrap().1,
+            Some(intro::Target::Place(_))
+        ));
+        g.act(Act::Goto(place_index(ROME, "forum").unwrap()));
+        run(&mut g, 10.);
+        assert!(matches!(
+            g.current_tip().unwrap().1,
+            Some(intro::Target::Event(_))
+        ));
+        g.act(Act::Observe(event_index("lupercalia").unwrap()));
+        g.act(Act::Close);
+        assert_eq!(g.current_tip().unwrap().1, Some(intro::Target::Codex));
+        g.act(Act::Codex);
+        assert!(g.current_tip().is_none());
+        // 導入の進み具合は保存される
+        let j = Journal::read(&g.journal.bytes()).unwrap();
+        assert_eq!(j.flags & FLAGS_DONE, FLAGS_DONE);
+    }
+
+    #[test]
+    fn chrono_explains_terms_and_remembers_them() {
+        let mut g = game(Gfx::new(1600, 900));
+        g.act(Act::Shift(ROME, None));
+        run(&mut g, warp::SHIFT_SECS + 0.2);
+        let antony = person_index("antony").unwrap();
+        g.act(Act::Meet(antony));
+        g.render();
+        // 「この年、カエサルとともに執政官を務めている」
+        let consul = glossary::index("執政官").unwrap();
+        assert!(g.journal.terms[consul]);
+        g.act(Act::Next);
+        g.render();
+        assert!(g.journal.terms[glossary::index("演壇").unwrap()]);
+        g.act(Act::Close);
+        g.act(Act::Observe(event_index("lupercalia").unwrap()));
+        g.render();
+        g.act(Act::Close);
+        g.act(Act::Codex);
+        g.act(Act::Tab(Tab::Words));
+        g.render();
+        g.reveal = true;
+        g.render();
+        let j = Journal::read(&g.journal.bytes()).unwrap();
+        assert_eq!(j.terms, g.journal.terms);
+        assert!(g.journal.terms.iter().filter(|t| **t).count() >= 2);
+        // 試練：答える前は用語を出さない（答えの手がかりにしない）
+        for (i, p) in PEOPLE.iter().enumerate() {
+            g.journal.met[i] |= p.era == ROME;
+        }
+        for (i, e) in EVENTS.iter().enumerate() {
+            g.journal.seen[i] |= e.era == ROME;
+        }
+        g.mode = Mode::Field;
+        g.act(Act::Begin(ROME));
+        let julian = glossary::index("ユリウス暦").unwrap();
+        g.journal.terms[julian] = false;
+        for q in 0..5 {
+            g.render();
+            if q == 4 {
+                assert!(!g.journal.terms[julian]);
+            }
+            g.act(Act::Answer(QUIZZES[quizzes(ROME)[q]].answer));
+            g.render();
+            g.act(Act::TrialNext);
+        }
+        assert!(g.journal.terms[julian]);
+    }
+
+    /// 読み上げる文の熟語は、すべて読み辞書（src/speech_ja.tsv）でかなに直る
+    #[test]
+    fn every_spoken_compound_has_a_reading() {
+        use crate::{lang::Lang, speech::text_for_speech};
+        let mut missing = std::collections::BTreeMap::new();
+        for text in voice::all_speech() {
+            let spoken = text_for_speech(&text, Lang::Ja);
+            let mut run = String::new();
+            for c in spoken.chars().chain(std::iter::once(' ')) {
+                if matches!(c, '一'..='龯' | '々') {
+                    run.push(c);
+                } else {
+                    if run.chars().count() >= 2 {
+                        missing.entry(run.clone()).or_insert_with(|| text.clone());
+                    }
+                    run.clear();
+                }
+            }
+            assert_eq!(
+                text_for_speech(&spoken, Lang::Ja),
+                spoken,
+                "再変換で読みが変わる: {text}"
+            );
+        }
+        if !missing.is_empty() {
+            let list: Vec<String> = missing.keys().cloned().collect();
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("output/missing-readings.txt");
+            let _ = std::fs::create_dir_all(path.parent().unwrap());
+            let _ = std::fs::write(&path, list.join("\n"));
+            panic!(
+                "読み辞書に無い熟語が{}語あります（output/missing-readings.txt）。例: {:?}",
+                list.len(),
+                &list[..list.len().min(10)]
+            );
+        }
+    }
+
+    #[test]
+    fn chrono_tips_follow_the_arrival_guide_instead_of_cutting_it_off() {
+        let mut g = Game::new(Gfx::new(1600, 900));
+        g.journal.flags = FLAG_INTRO;
+        g.act(Act::Shift(HEIAN, None));
+        run(&mut g, warp::SHIFT_SECS + 0.2);
+        assert!(
+            g.last_speech.starts_with(ERAS[HEIAN].name),
+            "{}",
+            g.last_speech
+        );
+        assert!(g.last_speech.contains("クロノ。"));
+        // 平安京の東市は「ひがしのいち」、長安の東市は「とうし」
+        assert!(
+            voice::place_speech(HEIAN, place_index(HEIAN, "eastmarket").unwrap())
+                .starts_with("ひがしのいち")
+        );
+        assert!(
+            voice::place_speech(CHANGAN, place_index(CHANGAN, "east").unwrap())
+                .starts_with("とうし")
+        );
+    }
+
+    #[test]
+    fn replay_reads_the_current_screen() {
+        let mut g = game(Gfx::new(1600, 900));
+        g.voice = false;
+        g.act(Act::Replay);
+        assert!(g.last_speech.contains(ERAS[0].name));
+        g.act(Act::Shift(ROME, None));
+        run(&mut g, warp::SHIFT_SECS + 0.2);
+        let antony = person_index("antony").unwrap();
+        g.act(Act::Meet(antony));
+        assert!(g.last_speech.contains("執政官"));
+        assert!(g.last_speech.contains("しっせいかん"), "ことばメモも読む");
+        g.render();
+        assert!(g.buttons.iter().any(|b| matches!(b.act, Act::Replay)));
+        g.act(Act::Next);
+        assert!(g.last_speech.starts_with(PEOPLE[antony].lines[1]));
+        g.handle(Ev::Key(0x73, true));
+        assert!(g.last_speech.starts_with(PEOPLE[antony].lines[1]));
+    }
+
+    #[test]
+    fn story_can_be_skipped_and_replayed() {
+        let mut g = Game::new(Gfx::new(900, 420));
+        g.gfx.set_compact(true);
+        run(&mut g, 1.);
+        for page in 0..intro::PAGES.len() {
+            g.open_story(page);
+            g.render();
+        }
+        g.handle(Ev::Key(27, true));
+        assert_eq!(g.overlay, Overlay::None);
+        assert!(g.journal.flags & FLAG_INTRO != 0);
+        g.act(Act::Help);
+        g.render();
+        g.act(Act::Story(0));
+        assert_eq!(g.overlay, Overlay::Story(0));
+        g.act(Act::StorySkip);
+        g.act(Act::TipsOff);
+        assert!(g.current_tip().is_none());
+    }
+
+    #[test]
+    fn older_saves_skip_the_introduction() {
+        let mut j = Journal::new();
+        j.met[0] = true;
+        let mut b = j.bytes();
+        // 用語メモの一覧（空）と、検査の値を外す
+        b.truncate(b.len() - 6);
+        b[..8].copy_from_slice(MAGIC_V3);
+        b.remove(12);
+        let hash = checksum(&b);
+        b.extend_from_slice(&hash.to_le_bytes());
+        assert_eq!(Journal::read(&b).unwrap().flags, FLAGS_DONE);
+    }
+
+    #[test]
     fn reads_saves_without_treasures() {
         let mut j = Journal::new();
         j.met[3] = true;
         j.visited[1] = true;
+        j.flags = FLAGS_DONE;
         let mut b = j.bytes();
-        b.truncate(b.len() - 4);
+        // 用語メモの一覧（空）と、検査の値を外す
+        b.truncate(b.len() - 6);
         b[..8].copy_from_slice(MAGIC_V2);
+        b.remove(12);
         b.remove(11);
         let hash = checksum(&b);
         b.extend_from_slice(&hash.to_le_bytes());
@@ -4557,12 +5122,12 @@ mod tests {
 
     #[test]
     fn meeting_requires_being_there() {
-        let mut g = Game::new(Gfx::new(1600, 900));
+        let mut g = game(Gfx::new(1600, 900));
         let caesar = person_index("caesar").unwrap();
         g.act(Act::Meet(caesar));
         assert!(!g.journal.met[caesar]);
         g.act(Act::Shift(ROME, None));
-        run(&mut g, 2.);
+        run(&mut g, warp::SHIFT_SECS + 0.2);
         g.act(Act::Meet(caesar));
         assert!(
             !g.journal.met[caesar],
@@ -4583,9 +5148,9 @@ mod tests {
 
     #[test]
     fn arrow_keys_follow_roads() {
-        let mut g = Game::new(Gfx::new(1600, 900));
+        let mut g = game(Gfx::new(1600, 900));
         g.act(Act::Shift(ROME, None));
-        run(&mut g, 2.);
+        run(&mut g, warp::SHIFT_SECS + 0.2);
         // フォルムから西へ：ポンペイウス劇場（道でつながる）かカピトリウム
         g.handle(Ev::Key(37, true));
         run(&mut g, 10.);
@@ -4596,12 +5161,12 @@ mod tests {
     #[test]
     fn all_views_render_and_search_filters() {
         for (w, h, c) in [(1600, 900, false), (1360, 720, false), (900, 420, true)] {
-            let mut g = Game::new(Gfx::new(w, h));
+            let mut g = game(Gfx::new(w, h));
             g.gfx.set_compact(c);
             g.frame(&[], 0.016, true);
             for era in 0..ERAS.len() {
                 g.act(Act::Shift(era, None));
-                run(&mut g, 2.);
+                run(&mut g, warp::SHIFT_SECS + 0.2);
                 g.frame(&[], 0.016, true);
             }
             g.act(Act::Codex);
