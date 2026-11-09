@@ -145,6 +145,7 @@ const textures = [null];
 // ------------------------------------------------------------------ Canvas2D（Direct2D / DirectWrite 相当）
 const ctx = uiCanvas.getContext('2d');
 const bitmaps = [];
+const images = [];
 const colorCache = new Map();
 function css(r, g, b, a) {
   const k = ((r * 255) | 0) * 16777216 + ((g * 255) | 0) * 65536 + ((b * 255) | 0) * 256 + ((Math.min(1, Math.max(0, a)) * 255) | 0);
@@ -480,6 +481,31 @@ const env = {
     ctx.beginPath();
     ctx.rect(x0, y0, x1 - x0, y1 - y0);
     ctx.clip();
+  },
+  js_clip_round: (x0, y0, x1, y1, r) => {
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(x0, y0, x1 - x0, y1 - y0, r);
+    ctx.clip();
+  },
+  // 画像ファイル（無ければ読み込みに失敗したまま、ゲームは画像なしの絵を描く）
+  js_img_load: (p, l) => {
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = str(p, l);
+    images.push(img);
+    return images.length - 1;
+  },
+  js_img_ready: (id) => {
+    const img = images[id];
+    return img && img.complete && img.naturalWidth > 0 ? 1 : 0;
+  },
+  js_img_draw: (id, x0, y0, x1, y1, alpha) => {
+    const img = images[id];
+    if (!img || !img.complete || !img.naturalWidth || alpha <= 0) return;
+    ctx.globalAlpha = Math.min(1, alpha);
+    ctx.drawImage(img, x0, y0, x1 - x0, y1 - y0);
+    ctx.globalAlpha = 1;
   },
   js_unclip: () => {
     ctx.restore();

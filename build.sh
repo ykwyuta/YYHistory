@@ -23,6 +23,12 @@ mkdir -p dist
 cp web/index.html web/main.js web/speech.mjs web/manifest.webmanifest web/icon-192.png web/icon-512.png web/apple-touch-icon.png dist/
 cp assets/app_icon.ico dist/favicon.ico
 cp target/wasm32-unknown-unknown/release/yyhistory.wasm dist/
+# 用意した画像（assets/images/。無い画像はゲームが図形で描く）
+if [ -d assets/images ]; then
+  mkdir -p dist/images
+  cp -R assets/images/. dist/images/
+  rm -f dist/images/manifest.json dist/images/README.md
+fi
 # wasm-opt があればさらに小さくする（任意）
 if command -v wasm-opt >/dev/null 2>&1; then
   wasm-opt -O3 dist/yyhistory.wasm -o dist/yyhistory.wasm || true
@@ -36,6 +42,8 @@ cat > dist/_headers <<'H'
   Content-Type: application/octet-stream
   Cache-Control: public, max-age=31536000, immutable
 /wasm-manifest.json
+  Cache-Control: no-cache
+/images/*
   Cache-Control: no-cache
 /main.js
   Cache-Control: no-cache

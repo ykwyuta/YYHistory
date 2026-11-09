@@ -6,7 +6,7 @@
 use crate::{
     gfx::{Font, Gfx, Texture},
     history::*,
-    platform, Ev,
+    images, platform, Ev,
 };
 
 // ------------------------------------------------------------------ 色
@@ -1174,6 +1174,17 @@ impl Game {
                 [0.14, 0.18, 0.26, 1.]
             },
         );
+        if known {
+            if let Some(p) = PEOPLE.iter().find(|p| p.name == name) {
+                if let Some(img) = self.gfx.image(&images::portrait(p.id)) {
+                    self.gfx.clip_round(x - r, y - r, x + r, y + r, r);
+                    self.gfx.draw_image(&img, x - r, y - r, x + r, y + r, 1.);
+                    self.gfx.clip_end();
+                    self.gfx.stroke_circle(x, y, r, 1.5, GOLD);
+                    return;
+                }
+            }
+        }
         self.gfx.stroke_circle(x, y, r - 3., 1., alpha(TEXT, 0.25));
         let ch: String = if known {
             name.chars().next().unwrap_or('？').to_string()
@@ -1601,30 +1612,51 @@ impl Game {
         let card = if compact { 150. } else { 176. };
         let (x0, y0, x1, y1) = (lw + 16., h - card + 4., w - 16., h - 12.);
         self.panel_box(x0, y0, x1, y1);
+        // 時代の扉絵があれば左に
+        let art = self.gfx.image(&images::era_art(self.pick));
+        let aw = if art.is_some() {
+            (y1 - y0 - 20.) * 16. / 9.
+        } else {
+            0.
+        };
+        if let Some(img) = art {
+            self.gfx
+                .draw_image(&img, x0 + 10., y0 + 10., x0 + 10. + aw, y1 - 10., 1.);
+            self.gfx.stroke_rect(
+                x0 + 10.,
+                y0 + 10.,
+                x0 + 10. + aw,
+                y1 - 10.,
+                1.,
+                alpha(GOLD, 0.6),
+            );
+            image_tag(&mut self.gfx, x0 + 10. + aw, y1 - 10.);
+        }
+        let tx0 = x0 + 20. + if aw > 0. { aw + 6. } else { 0. };
         self.text(
             &format!("{}　／　{}", e.years, e.area),
-            x0 + 20.,
+            tx0,
             y0 + 12.,
-            x1 - x0 - 260.,
+            x1 - tx0 - 240.,
             18.,
             Font::Small,
             GOLD,
         );
         self.text(
             &format!("{} ― {}", e.name, e.period),
-            x0 + 20.,
+            tx0,
             y0 + 32.,
-            x1 - x0 - 260.,
+            x1 - tx0 - 240.,
             26.,
             Font::Big,
             TEXT,
         );
-        self.gfx.clip_begin(x0, y0 + 60., x1 - 240., y1 - 8.);
+        self.gfx.clip_begin(tx0, y0 + 60., x1 - 240., y1 - 8.);
         self.text(
             e.intro,
-            x0 + 20.,
+            tx0,
             y0 + 62.,
-            x1 - x0 - 260.,
+            x1 - tx0 - 240.,
             y1 - y0 - 66.,
             Font::Normal,
             MUTED,
@@ -1678,6 +1710,16 @@ impl Game {
         };
         self.gfx
             .fill_rect(0., 0., w, h, [0.02, 0.04, 0.09, 0.92 * fade]);
+        if let Some(img) = self.gfx.image(&images::era_art(self.shift_to.0)) {
+            // 転移先の景色が、だんだん浮かび上がる
+            cover(
+                &mut self.gfx,
+                &img,
+                [0., 0., w, h],
+                16. / 9.,
+                0.75 * fade * t.powf(0.7),
+            );
+        }
         let (cx, cy) = (w / 2., h / 2.);
         for k in 0..7 {
             let p = ((t * 1.8 + k as f32 / 7.) % 1.).powf(1.4);
@@ -1737,6 +1779,7 @@ impl Game {
         let era = &ERAS[self.journal.era];
         let tint = era.tint;
         let m = |x: f32, y: f32| (r[0] + x * r[2], r[1] + y * r[3]);
+        let has_map = self.gfx.image(&images::map(self.journal.era)).is_some();
         let g = &mut self.gfx;
         // 額縁と紙
         g.rect(
@@ -1753,6 +1796,10 @@ impl Game {
             r[1] + r[3] + 4.,
             GOLD,
         );
+        if has_map {
+            // 絵地図は文字・UI の層に描く（field_ui）
+            return;
+        }
         g.rect_vgrad(
             r[0],
             r[1],
@@ -1924,8 +1971,45 @@ impl Game {
         let ei = self.journal.era;
         let era = &ERAS[ei];
         let compact = self.gfx.compact;
+        // 絵地図があれば、それを敷いて印を重ねる
+        let map_img = self.gfx.image(&images::map(ei));
+        if let Some(img) = &map_img {
+            self.gfx
+                .draw_image(img, r[0], r[1], r[0] + r[2], r[1] + r[3], 1.);
+            image_tag(&mut self.gfx, r[0] + r[2], r[1] + r[3]);
+            for (i, p) in era.places.iter().enumerate() {
+                let (x, y) = (r[0] + p.x * r[2], r[1] + p.y * r[3]);
+                let here = i == self.journal.place && self.travel.is_none();
+                if here {
+                    let pulse = 0.5 + 0.5 * (self.clock * 3.).sin();
+                    self.gfx
+                        .fill_circle(x, y, 26. + pulse * 6., [1., 0.85, 0.45, 0.30]);
+                }
+                self.gfx
+                    .stroke_circle(x, y, 16., 3., [0.2, 0.12, 0.05, 0.6]);
+                self.gfx.stroke_circle(
+                    x,
+                    y,
+                    16.,
+                    2.,
+                    if here {
+                        [1., 0.78, 0.3, 1.]
+                    } else {
+                        [0.98, 0.94, 0.84, 0.95]
+                    },
+                );
+            }
+            let (ax, ay) = (
+                r[0] + self.avatar.0 * r[2] + 14.,
+                r[1] + self.avatar.1 * r[3] - 26. + (self.clock * 5.).sin() * 2.,
+            );
+            self.gfx
+                .fill_circle(ax, ay + 10., 8., [0.15, 0.55, 0.75, 1.]);
+            self.gfx.fill_circle(ax, ay, 9., [0.15, 0.55, 0.75, 1.]);
+            self.gfx.fill_circle(ax, ay, 6., [0.85, 0.97, 1., 1.]);
+        }
         // 地名の注記
-        for f in era.features {
+        for f in era.features.iter().filter(|_| map_img.is_none()) {
             if let Feature::Label(s, x, y) = f {
                 let (x, y) = (r[0] + x * r[2], r[1] + y * r[3]);
                 self.text(
@@ -2391,6 +2475,28 @@ impl Game {
         );
     }
 
+    /// 出来事の場面の高さ（画像が無ければ0）
+    fn banner_h(&mut self, i: usize, tw: f32) -> f32 {
+        if self.gfx.image(&images::event(EVENTS[i].id)).is_some() {
+            (tw * 9. / 16.).min(320.) + 12.
+        } else {
+            0.
+        }
+    }
+
+    /// 出来事の場面の画像を描き、使った高さを返す
+    fn banner(&mut self, i: usize, x: f32, y: f32, tw: f32) -> f32 {
+        let Some(img) = self.gfx.image(&images::event(EVENTS[i].id)) else {
+            return 0.;
+        };
+        let h = (tw * 9. / 16.).min(320.);
+        cover(&mut self.gfx, &img, [x, y, tw, h], 16. / 9., 1.);
+        self.gfx
+            .stroke_rect(x, y, x + tw, y + h, 1., alpha(GOLD, 0.6));
+        image_tag(&mut self.gfx, x + tw, y + h);
+        h + 12.
+    }
+
     fn observe_ui(&mut self, i: usize) {
         let e = &EVENTS[i];
         let tw = 860.0f32.min(self.gfx.width as f32 - 32.) - 60.;
@@ -2402,6 +2508,7 @@ impl Game {
         if !e.people.is_empty() {
             need += 64.;
         }
+        need += self.banner_h(i, tw);
         let [x, y, cw, ch] = self.card(860., need.max(320.));
         let place = place_index(e.era, e.place)
             .map(|k| ERAS[e.era].places[k].name)
@@ -2432,6 +2539,7 @@ impl Game {
         let off = self.scroll[Scroll::Overlay as usize];
         self.gfx.clip_begin(x, body_y, x + cw, body_y + body_h);
         let mut yy = body_y + 4. - off;
+        yy += self.banner(i, x + 30., yy, tw);
         for para in e.body {
             let ph = self.gfx.measure_h(para, Font::Normal, tw);
             self.text(para, x + 30., yy, tw, ph, Font::Normal, TEXT);
@@ -2853,7 +2961,7 @@ impl Game {
                 1.5,
                 if got { GOLD } else { alpha(LOCKED, 0.7) },
             );
-            self.gem(x + 50., y + 70., 30., c, known);
+            self.gem_era(x + 50., y + 70., 30., *era, known);
             let tx = x + 96.;
             let tw = cw - 108.;
             self.text(
@@ -2886,6 +2994,21 @@ impl Game {
             });
         }
         28. + items.len().div_ceil(cols) as f32 * (ch + 10.)
+    }
+
+    /// 秘宝の印。秘宝の画像があればそれを描く
+    fn gem_era(&mut self, x: f32, y: f32, r: f32, era: usize, lit: bool) {
+        if lit {
+            if let Some(img) = self.gfx.image(&images::treasure_image(era)) {
+                let p = 0.5 + 0.5 * (self.clock * 2.).sin();
+                self.gfx
+                    .fill_circle(x, y, r + 8. + p * 3., alpha(era_color(era), 0.22));
+                let s = r * 1.25;
+                self.gfx.draw_image(&img, x - s, y - s, x + s, y + s, 1.);
+                return;
+            }
+        }
+        self.gem(x, y, r, era_color(era), lit);
     }
 
     /// 秘宝の印（輝く宝石）
@@ -2928,6 +3051,9 @@ impl Game {
     fn akashic_backdrop(&mut self) {
         let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
         self.gfx.fill_rect(0., 0., w, h, [0.01, 0.03, 0.08, 0.86]);
+        if let Some(img) = self.gfx.image(images::AKASHIC) {
+            cover(&mut self.gfx, &img, [0., 0., w, h], 16. / 9., 0.9);
+        }
         let (cx, cy) = (w / 2., h / 2.);
         for k in 0..5 {
             let r = 120. + k as f32 * 90. + (self.clock * 0.6 + k as f32).sin() * 6.;
@@ -3203,7 +3329,7 @@ impl Game {
         if win {
             let t = treasure(era);
             let gy = y + top;
-            self.gem(x + 80., gy + 20., 40., era_color(era), true);
+            self.gem_era(x + 80., gy + 20., 40., era, true);
             self.text(
                 "秘宝を手に入れた",
                 x + 140.,
@@ -3296,7 +3422,7 @@ impl Game {
             Font::Small,
             if got { GOLD } else { LOCKED },
         );
-        self.gem(x + 74., y + 90., 40., era_color(era), known);
+        self.gem_era(x + 74., y + 90., 40., era, known);
         if known {
             self.text(t.name, x + 136., y + 72., cw - 166., 30., Font::Big, TEXT);
             let dy = y + 150.;
@@ -3421,11 +3547,23 @@ impl Game {
                 if known { GOLD } else { MUTED },
             );
             if known {
-                self.text(e.title, x + 14., y + 30., cw - 28., 24., Font::Big, TEXT);
-                let lead = e.body[0];
+                // 場面の画像があれば右に小さく
+                let thumb = self.gfx.image(&images::event(e.id));
+                let tw = if thumb.is_some() { cw - 150. } else { cw - 28. };
                 self.gfx
-                    .clip_begin(x, y.max(vy0), x + cw, (y + ch - 26.).min(vy1));
-                self.text(lead, x + 14., y + 56., cw - 28., 36., Font::Small, MUTED);
+                    .clip_begin(x, y.max(vy0), x + cw, (y + ch - 4.).min(vy1));
+                if let Some(img) = thumb {
+                    let (tx, ty) = (x + cw - 130., y + 30.);
+                    self.gfx.draw_image(&img, tx, ty, tx + 118., ty + 66.4, 1.);
+                    self.gfx
+                        .stroke_rect(tx, ty, tx + 118., ty + 66.4, 1., alpha(GOLD, 0.5));
+                }
+                self.text(e.title, x + 14., y + 30., tw, 24., Font::Big, TEXT);
+                let lead = e.body[0];
+                self.gfx.clip_end();
+                self.gfx
+                    .clip_begin(x, y.max(vy0), x + 14. + tw, (y + ch - 26.).min(vy1));
+                self.text(lead, x + 14., y + 56., tw, 36., Font::Small, MUTED);
                 self.gfx.clip_end();
             } else {
                 self.text("？？？", x + 14., y + 30., cw - 28., 24., Font::Big, MUTED);
@@ -3743,6 +3881,9 @@ impl Game {
             let off = self.scroll[Scroll::Overlay as usize];
             self.gfx.clip_begin(x, body_y, x + cw, body_y + body_h);
             let mut yy = body_y + 6. - off;
+            if let Entry::Event(i) = e {
+                yy += self.banner(i, x + 30., yy, tw);
+            }
             let (paras, source, links): (Vec<&str>, &str, Vec<Entry>) = match e {
                 Entry::Person(i) => (
                     vec![PEOPLE[i].bio],
@@ -3889,6 +4030,9 @@ impl Game {
             return head + 120.;
         }
         let mut need = head + 6. + 28. + 60. + 16.;
+        if let Entry::Event(i) = e {
+            need += self.banner_h(i, tw);
+        }
         for p in paras {
             need += self.gfx.measure_h(p, Font::Normal, tw) + 10.;
         }
@@ -3909,7 +4053,7 @@ impl Game {
             Font::TitleMid,
             GOLD,
         );
-        let body = "1　世界地図で行き先の時代を選び、「転移する」でその時代へ渡ります。\n\n2　時代の地図では、場所を押すと道をたどって移動します。矢印キーでも移動できます。「人」の印はまだ会っていない人物、「！」はまだ観察していない出来事のある場所です。\n\n3　人物に「会う」と人物一覧表に、出来事を「観察」すると出来事集と年表に記録されます。\n\n4　その時代の人物と出来事をすべて集めると「アカシックレコードの試練」が始まります。時代についての四択問題5問に全問正解すると、その時代にゆかりのある実在の品が「秘宝」として手に入ります。何度でも挑み直せます。\n\n5　図鑑では、人物一覧表・年表・出来事集・秘宝を見返せます。「未発見も表示」をONにすると、まだ見つけていない項目も読めます（学習用）。\n\n―― 内容の正確さについて ――\n年代・人物・出来事は、各項目に示した史料と研究に基づいてまとめています。日付に諸説あるものや史料によって食い違うものは本文に記しています。和暦の月日は当時の暦（旧暦）のままです。\n人物の言葉は、事実を本人の語りとして再構成した教材であり、「」で示した史料の引用を除いて実際の発言ではありません。人物がいる場所は、その人物にゆかりのある場所です。地図は位置関係を示す概略図で、建物の形や距離は正確ではありません。\n\nF2 図鑑 ／ F3 使い方 ／ F11 全画面 ／ Esc 戻る ／ Enter 次へ・転移";
+        let body = "1　世界地図で行き先の時代を選び、「転移する」でその時代へ渡ります。\n\n2　時代の地図では、場所を押すと道をたどって移動します。矢印キーでも移動できます。「人」の印はまだ会っていない人物、「！」はまだ観察していない出来事のある場所です。\n\n3　人物に「会う」と人物一覧表に、出来事を「観察」すると出来事集と年表に記録されます。\n\n4　その時代の人物と出来事をすべて集めると「アカシックレコードの試練」が始まります。時代についての四択問題5問に全問正解すると、その時代にゆかりのある実在の品が「秘宝」として手に入ります。何度でも挑み直せます。\n\n5　図鑑では、人物一覧表・年表・出来事集・秘宝を見返せます。「未発見も表示」をONにすると、まだ見つけていない項目も読めます（学習用）。\n\n―― 内容の正確さについて ――\n年代・人物・出来事は、各項目に示した史料と研究に基づいてまとめています。日付に諸説あるものや史料によって食い違うものは本文に記しています。和暦の月日は当時の暦（旧暦）のままです。\n人物の言葉は、事実を本人の語りとして再構成した教材であり、「」で示した史料の引用を除いて実際の発言ではありません。人物がいる場所は、その人物にゆかりのある場所です。地図は位置関係を示す概略図で、建物の形や距離は正確ではありません。肖像や場面の画像は、時代考証に基づくイメージ（想像図を含む）です。\n\nF2 図鑑 ／ F3 使い方 ／ F11 全画面 ／ Esc 戻る ／ Enter 次へ・転移";
         let by = y + 72.;
         let bh = ch - 72. - 62.;
         self.scroll_areas.push(([x, by, cw, bh], Scroll::Overlay));
@@ -3926,6 +4070,40 @@ impl Game {
             true,
         );
     }
+}
+
+/// 画像を枠いっぱいに、縦横比を保って描く（はみ出す分は切り抜く）
+fn cover(g: &mut Gfx, img: &crate::gfx::Image, r: [f32; 4], aspect: f32, a: f32) {
+    let [x, y, w, h] = r;
+    let (iw, ih) = if w / h > aspect {
+        (w, w / aspect)
+    } else {
+        (h * aspect, h)
+    };
+    g.clip_begin(x, y, x + w, y + h);
+    g.draw_image(
+        img,
+        x + (w - iw) / 2.,
+        y + (h - ih) / 2.,
+        x + (w + iw) / 2.,
+        y + (h + ih) / 2.,
+        a,
+    );
+    g.clip_end();
+}
+
+/// 画像の隅に「イメージ」と示す
+fn image_tag(g: &mut Gfx, x1: f32, y1: f32) {
+    g.fill_round(x1 - 62., y1 - 24., x1 - 6., y1 - 6., 4., [0., 0., 0., 0.55]);
+    g.text(
+        "イメージ",
+        x1 - 62.,
+        y1 - 24.,
+        56.,
+        18.,
+        Font::NormalCenter,
+        [1., 1., 1., 0.9],
+    );
 }
 
 fn contains(fields: &[&str], q: &str) -> bool {

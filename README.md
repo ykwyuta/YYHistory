@@ -65,6 +65,16 @@ F2：図鑑、F3：使い方、F11：全画面、Esc：戻る、Enter／Space：
 
 誤りに気づいた場合は `src/history.rs` の該当項目を直してください。`cargo test` で、人物・出来事・場所の対応、道のつながり、年代順の並びが検査されます。
 
+## 画像
+
+画像を用意すると、ゲームの見た目を差し替えられます。画像が無いあいだは、これまでどおり図形で描きます。
+
+- **必要な画像の一覧**：[docs/images.md](docs/images.md)（全110枚。人物の肖像43・出来事の場面45・秘宝7・時代の扉絵7・時代の地図7・試練の背景1）。大きさ・形式・使う場所と、1枚ずつの描く内容と時代考証の注意を載せています。
+- **置き場所**：`assets/images/` の下に、一覧のパスのとおりに置きます（例：`assets/images/portraits/caesar.jpg`）。ブラウザ版はビルド時に `dist/images/` へ写し、Windows版は exe の隣の `images/` かリポジトリの `assets/images/` から読みます。
+- **作成漏れのチェック**：`npm run images:check` で、そろった枚数を種類ごとに表示し、まだ無い画像、大きさ・形式・透過が規格と違う画像、一覧に無い画像（パスの間違い）を報告します。`npm run images:report` で `output/images-report.md` にチェックリストを書き出します。`--strict` を付けると、1枚でも抜けがあれば失敗します（公開前の確認用）。GitHub Actions では、規格と違う画像があればビルドを失敗させ、抜けは一覧の表示だけにしています。
+- **一覧の更新**：一覧は `src/images.rs` がゲームのデータから作るので、人物や出来事を足すと必要な画像も増えます。`assets/images/manifest.json` と `docs/images.md` が古いと `cargo test` が失敗するので、`npm run images:list` で作り直してください。
+- **表示**：肖像・出来事の場面・扉絵・地図には、ゲーム内で「イメージ」と表示します（肖像は円形に切り抜くので、顔を中央に）。絵地図の上には、ゲームが場所の印・名札・自分の位置を重ねます。
+
 ## 保存
 
 会ったり観察したり秘宝を得たりすると自動保存し、起動時に読み込みます。ブラウザはIndexedDBの `yyhistory`、Windowsは `%APPDATA%\yyhistory\saves`。「書き出し」「読み込み」で `.yyhsav` のバックアップを移動できます。記録は人物・出来事の固定IDで保存するので、データの並び替えで記録の対応は変わりません。記録にはバージョンとチェックサムを持たせ、途中で切れた記録や壊れたファイルを拒否します。秘宝の無い前の版の記録も読み込めます。旧版（写真帳）の記録は読み込めません。
@@ -74,6 +84,7 @@ F2：図鑑、F3：使い方、F11：全画面、Esc：戻る、Enter／Space：
 ```powershell
 cargo test --locked --lib --features headless
 npm test
+npm run images:check
 npm run build
 node tools/wasm-smoke.mjs
 cargo build --release --locked --bin yyhistory-win

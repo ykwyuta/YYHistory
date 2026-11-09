@@ -14,6 +14,8 @@ jobs:
           node-version: 22
       - run: cargo test --locked --lib
       - run: npm test
+      # 規格違いの画像があれば失敗。まだ無い画像は一覧を表示するだけ
+      - run: node tools/check_images.mjs
       - run: npm run build
       - run: node tools/wasm-smoke.mjs
       - uses: actions/upload-artifact@v4
@@ -33,4 +35,5 @@ jobs:
           name: yyhistory-windows
           path: |
             target/release/yyhistory-win.exe
+            assets/images
             README.md

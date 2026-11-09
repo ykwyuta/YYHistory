@@ -57,6 +57,10 @@ pub mod js {
         );
         pub fn js_clip(x0: f32, y0: f32, x1: f32, y1: f32);
         pub fn js_unclip();
+        pub fn js_clip_round(x0: f32, y0: f32, x1: f32, y1: f32, r: f32);
+        pub fn js_img_load(ptr: *const u8, len: usize) -> u32;
+        pub fn js_img_ready(id: u32) -> u32;
+        pub fn js_img_draw(id: u32, x0: f32, y0: f32, x1: f32, y1: f32, alpha: f32);
         pub fn js_fill_circle(x: f32, y: f32, rad: f32, r: f32, g: f32, b: f32, a: f32);
         pub fn js_stroke_circle(x: f32, y: f32, rad: f32, w: f32, r: f32, g: f32, b: f32, a: f32);
         pub fn js_text(
