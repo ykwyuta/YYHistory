@@ -67,6 +67,9 @@ pub enum Font {
 /// 画像（Direct2D のビットマップ）。ブラウザ版と同じ名前で使う
 pub type Bitmap = ID2D1Bitmap;
 
+/// 画像ファイルから読み込んだ絵
+pub type Image = ID2D1Bitmap;
+
 pub struct Gfx {
     pub device: ID3D11Device,
     pub ctx: ID3D11DeviceContext,
@@ -106,6 +109,8 @@ pub struct Gfx {
     /// 文字の配置（文・書体・枠の幅と高さ → 配置）。書体を作り直したら捨てる
     layout_cache: std::collections::HashMap<(String, u8, u32, u32), IDWriteTextLayout>,
     pub d2d_gen: u32,
+    /// 画像のパス → （作ったときの描画世代, 画像）
+    images: std::collections::HashMap<String, (u32, Option<ID2D1Bitmap>)>,
     wbuf: Vec<u16>,
     /// スマートフォン向けの詰めた画面か（デスクトップでは常に偽）
     pub compact: bool,
@@ -421,6 +426,7 @@ impl Gfx {
                 measure_cache: std::collections::HashMap::new(),
                 layout_cache: std::collections::HashMap::new(),
                 d2d_gen: 0,
+                images: std::collections::HashMap::new(),
                 compact: false,
                 wbuf: Vec::new(),
             };
@@ -1014,6 +1020,73 @@ impl Gfx {
             });
         }
         Some(b)
+    }
+
+    /// 以降の文字・UI の描画を矩形の中に限る（clip_end と対で使う）
+    pub fn clip_begin(&self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        let Some(rt) = &self.d2d else { return };
+        unsafe {
+            rt.PushAxisAlignedClip(
+                &D2D_RECT_F {
+                    left: x0,
+                    top: y0,
+                    right: x1,
+                    bottom: y1,
+                },
+                D2D1_ANTIALIAS_MODE_ALIASED,
+            );
+        }
+    }
+
+    /// 角を丸めた矩形で切り抜く（Direct2D 版は外接する矩形で切り抜く）
+    pub fn clip_round(&self, x0: f32, y0: f32, x1: f32, y1: f32, _r: f32) {
+        self.clip_begin(x0, y0, x1, y1);
+    }
+
+    /// assets/images/ の画像（exe の隣の images/、またはリポジトリの assets/images/ から読む）
+    pub fn image(&mut self, path: &str) -> Option<Image> {
+        if let Some((gen, img)) = self.images.get(path) {
+            if *gen == self.d2d_gen {
+                return img.clone();
+            }
+        }
+        let img = Self::read_image(path).and_then(|(w, h, px)| self.create_bitmap(w, h, &px));
+        self.images
+            .insert(path.to_string(), (self.d2d_gen, img.clone()));
+        img
+    }
+
+    fn read_image(path: &str) -> Option<(u32, u32, Vec<u32>)> {
+        let mut dirs = vec![];
+        if let Some(exe) = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        {
+            dirs.push(exe.join("images"));
+            dirs.push(exe.join("../../assets/images"));
+        }
+        dirs.push(std::path::PathBuf::from("assets/images"));
+        let bytes = dirs.iter().find_map(|d| std::fs::read(d.join(path)).ok())?;
+        let rgba = image::load_from_memory(&bytes).ok()?.into_rgba8();
+        let (w, h) = rgba.dimensions();
+        let px = rgba
+            .pixels()
+            .map(|p| {
+                let a = p[3] as u32;
+                let m = |c: u8| (c as u32 * a + 127) / 255;
+                (a << 24) | (m(p[0]) << 16) | (m(p[1]) << 8) | m(p[2])
+            })
+            .collect();
+        Some((w, h, px))
+    }
+
+    pub fn draw_image(&self, img: &Image, x0: f32, y0: f32, x1: f32, y1: f32, alpha: f32) {
+        self.draw_bitmap_alpha(img, x0, y0, x1, y1, alpha);
+    }
+
+    pub fn clip_end(&self) {
+        let Some(rt) = &self.d2d else { return };
+        unsafe { rt.PopAxisAlignedClip() }
     }
 
     pub fn fill_rect(&self, x0: f32, y0: f32, x1: f32, y1: f32, c: [f32; 4]) {

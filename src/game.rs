@@ -1,169 +1,285 @@
+//! 時空を渡って歴史の現場を歩くゲーム。
+//!
+//! 世界地図で時代と地域を選んで転移し、その時代の街のミニマップを移動して
+//! 人物に会い、出来事を観察する。出会った人物と観察した出来事は図鑑
+//! （人物一覧表・年表・出来事集）に記録される。
 use crate::{
-    gfx::{Bitmap, Font, Gfx, Texture},
+    gfx::{Font, Gfx, Texture},
     history::*,
-    platform, scene, Ev,
+    images, platform, Ev,
 };
-const INK: [f32; 4] = [0.15, 0.22, 0.23, 1.];
-const MUTED: [f32; 4] = [0.41, 0.47, 0.46, 1.];
-const PAPER: [f32; 4] = [0.98, 0.97, 0.94, 1.];
-const WHITE: [f32; 4] = [1., 1., 0.99, 1.];
-const GREEN: [f32; 4] = [0.19, 0.37, 0.31, 1.];
-const GOLD: [f32; 4] = [0.77, 0.43, 0.20, 1.];
-const LINE: [f32; 4] = [0.84, 0.85, 0.80, 1.];
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Mode {
-    Map,
-    Aerial,
-    Street,
-    Album,
+
+// ------------------------------------------------------------------ 色
+const NIGHT: [f32; 4] = [0.05, 0.08, 0.14, 1.];
+const PANEL: [f32; 4] = [0.09, 0.13, 0.22, 0.97];
+const PANEL2: [f32; 4] = [0.13, 0.19, 0.31, 1.];
+const EDGE: [f32; 4] = [0.30, 0.40, 0.56, 1.];
+const GOLD: [f32; 4] = [0.90, 0.75, 0.42, 1.];
+const CYAN: [f32; 4] = [0.50, 0.86, 0.94, 1.];
+const TEXT: [f32; 4] = [0.95, 0.93, 0.87, 1.];
+const MUTED: [f32; 4] = [0.66, 0.71, 0.78, 1.];
+const LOCKED: [f32; 4] = [0.36, 0.42, 0.52, 1.];
+const INK: [f32; 4] = [0.20, 0.15, 0.10, 1.];
+const INK_SOFT: [f32; 4] = [0.36, 0.29, 0.21, 1.];
+const WATER: [f32; 4] = [0.56, 0.72, 0.78, 1.];
+
+/// 時代ごとの見分けの色
+fn era_color(i: usize) -> [f32; 4] {
+    const C: [[f32; 4]; 7] = [
+        [0.85, 0.42, 0.35, 1.],
+        [0.90, 0.66, 0.30, 1.],
+        [0.80, 0.52, 0.78, 1.],
+        [0.40, 0.76, 0.56, 1.],
+        [0.48, 0.66, 0.92, 1.],
+        [0.36, 0.60, 0.95, 1.],
+        [0.86, 0.80, 0.42, 1.],
+    ];
+    C[i % C.len()]
 }
+
+fn mix(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+        a[3] + (b[3] - a[3]) * t,
+    ]
+}
+
+fn alpha(c: [f32; 4], a: f32) -> [f32; 4] {
+    [c[0], c[1], c[2], c[3] * a]
+}
+
+// ------------------------------------------------------------------ 状態
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Mode {
+    /// 世界地図で時代を選ぶ
+    Atlas,
+    /// 転移の演出
+    Shift,
+    /// 時代のミニマップ
+    Field,
+    /// 図鑑
+    Codex,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Tab {
+    People,
+    Timeline,
+    Events,
+    Treasures,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Entry {
+    Person(usize),
+    Event(usize),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Overlay {
+    None,
+    Meet(usize, usize),
+    Observe(usize),
+    Detail(Entry),
+    Help,
+    /// 試練の始まり（時代）
+    TrialIntro(usize),
+    /// 試練の問題（時代, 何問目, 選んだ答え, 正解数）
+    Trial(usize, usize, Option<usize>, usize),
+    /// 試練の結果（時代, 正解数）
+    TrialResult(usize, usize),
+    /// 秘宝の説明（時代）
+    Treasure(usize),
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Act {
-    Region(usize),
-    Select(usize),
-    Visit,
-    Street,
-    World,
-    Zoom(f32),
-    Mode(Mode),
-    Capture,
-    Back,
-    Turn(f32),
-    Search,
-    Prev(i32),
-    Page(i32),
-    Export,
-    Import,
+    Atlas,
+    Codex,
+    PickEra(usize),
+    Shift(usize, Option<usize>),
+    Goto(usize),
+    Meet(usize),
+    Observe(usize),
+    Next,
+    Prev,
+    Close,
+    Tab(Tab),
+    Filter(Option<usize>),
+    Detail(Entry),
     Help,
     Voice,
-    Close,
-    Photo(usize),
-    Year(i32),
-    Powers,
+    Export,
+    Import,
+    Reveal,
+    Search,
+    TrialIntro(usize),
+    Begin(usize),
+    Answer(usize),
+    TrialNext,
+    Treasure(usize),
 }
+
 struct Button {
     rect: [f32; 4],
     act: Act,
 }
+
+/// 旅の記録（保存される）
 #[derive(Clone, Debug, PartialEq)]
-struct Photo {
-    event: usize,
-    heading: f32,
-    zoom: f32,
-    time: f32,
-    quality: u8,
-}
-#[derive(Clone, Debug)]
 struct Journal {
-    year: i32,
-    region: usize,
-    selected: usize,
-    photos: Vec<Photo>,
+    era: usize,
+    place: usize,
+    visited: Vec<bool>,
+    met: Vec<bool>,
+    seen: Vec<bool>,
+    /// 試練を突破して手に入れた秘宝（時代ごと）
+    treasures: Vec<bool>,
 }
+
+const MAGIC: &[u8; 8] = b"YYHIST\x03\0";
+/// 秘宝の無い前の版の記録
+const MAGIC_V2: &[u8; 8] = b"YYHIST\x02\0";
+
+fn bits(v: &[bool]) -> u8 {
+    v.iter()
+        .enumerate()
+        .filter(|(_, x)| **x)
+        .fold(0u8, |a, (i, _)| a | 1 << i)
+}
+
 impl Journal {
     fn new() -> Self {
         Self {
-            year: -221,
-            region: 0,
-            selected: 4,
-            photos: vec![],
+            era: 0,
+            place: ERAS[0].start,
+            visited: vec![false; ERAS.len()],
+            met: vec![false; PEOPLE.len()],
+            seen: vec![false; EVENTS.len()],
+            treasures: vec![false; ERAS.len()],
         }
     }
     fn bytes(&self) -> Vec<u8> {
-        let mut b = b"YYHIST\x01\0".to_vec();
-        b.extend_from_slice(&self.year.to_le_bytes());
-        b.push(self.region as u8);
-        b.push(self.selected as u8);
-        b.extend_from_slice(&(self.photos.len() as u16).to_le_bytes());
-        for p in &self.photos {
-            let id = EVENTS[p.event].id.as_bytes();
-            b.push(id.len() as u8);
-            b.extend_from_slice(id);
-            for f in [p.heading, p.zoom, p.time] {
-                b.extend_from_slice(&f.to_le_bytes());
+        let mut b = MAGIC.to_vec();
+        b.push(self.era as u8);
+        b.push(self.place as u8);
+        b.push(bits(&self.visited));
+        b.push(bits(&self.treasures));
+        let ids = |list: &mut Vec<u8>, ids: Vec<&str>| {
+            list.extend_from_slice(&(ids.len() as u16).to_le_bytes());
+            for id in ids {
+                list.push(id.len() as u8);
+                list.extend_from_slice(id.as_bytes());
             }
-            b.push(p.quality);
-        }
+        };
+        ids(
+            &mut b,
+            PEOPLE
+                .iter()
+                .zip(&self.met)
+                .filter(|(_, m)| **m)
+                .map(|(p, _)| p.id)
+                .collect(),
+        );
+        ids(
+            &mut b,
+            EVENTS
+                .iter()
+                .zip(&self.seen)
+                .filter(|(_, m)| **m)
+                .map(|(e, _)| e.id)
+                .collect(),
+        );
         let hash = checksum(&b);
         b.extend_from_slice(&hash.to_le_bytes());
         b
     }
     fn read(b: &[u8]) -> Result<Self, String> {
         let invalid =
-            || "YYHistoryの記録として読み込めません。現在の写真帳はそのままです。".to_string();
-        if b.len() < 20 || b.len() > 65536 || &b[..8] != b"YYHIST\x01\0" {
+            || "YYHistoryの記録として読み込めません。現在の記録はそのままです。".to_string();
+        let v3 = b.len() >= 8 && &b[..8] == MAGIC;
+        if b.len() < 19 || b.len() > 65536 || !(v3 || &b[..8] == MAGIC_V2) {
             return Err(invalid());
         }
-        let payload = b.len() - 4;
-        if checksum(&b[..payload]) != u32::from_le_bytes(b[payload..].try_into().unwrap()) {
+        let end = b.len() - 4;
+        if checksum(&b[..end]) != u32::from_le_bytes(b[end..].try_into().unwrap()) {
             return Err(invalid());
         }
-        let year = i32::from_le_bytes(b[8..12].try_into().unwrap());
-        let region = b[12] as usize;
-        let selected = b[13] as usize;
-        if !(-3000..=2000).contains(&year)
-            || year == 0
-            || region >= REGIONS.len()
-            || selected >= EVENTS.len()
-        {
+        let era = b[8] as usize;
+        let place = b[9] as usize;
+        if era >= ERAS.len() || place >= ERAS[era].places.len() {
             return Err(invalid());
         }
-        let n = u16::from_le_bytes(b[14..16].try_into().unwrap()) as usize;
-        if n > EVENTS.len() {
+        let visited = (0..ERAS.len()).map(|i| b[10] & (1 << i) != 0).collect();
+        let tb = if v3 { b[11] } else { 0 };
+        if tb >> ERAS.len() != 0 {
             return Err(invalid());
         }
-        let mut at = 16;
-        let mut photos = vec![];
-        for _ in 0..n {
-            if at >= payload {
+        let treasures = (0..ERAS.len()).map(|i| tb & (1 << i) != 0).collect();
+        let mut at = if v3 { 12 } else { 11 };
+        let mut list = |find: &dyn Fn(&str) -> Option<usize>, n_all: usize| {
+            if at + 2 > end {
                 return Err(invalid());
             }
-            let len = b[at] as usize;
-            at += 1;
-            if at + len + 13 > payload {
-                return Err(invalid());
+            let n = u16::from_le_bytes([b[at], b[at + 1]]) as usize;
+            at += 2;
+            let mut out = vec![false; n_all];
+            for _ in 0..n {
+                if at >= end {
+                    return Err(invalid());
+                }
+                let len = b[at] as usize;
+                at += 1;
+                if at + len > end {
+                    return Err(invalid());
+                }
+                let id = std::str::from_utf8(&b[at..at + len]).map_err(|_| invalid())?;
+                at += len;
+                let i = find(id).ok_or_else(invalid)?;
+                if std::mem::replace(&mut out[i], true) {
+                    return Err(invalid());
+                }
             }
-            let id = std::str::from_utf8(&b[at..at + len]).map_err(|_| invalid())?;
-            at += len;
-            let event = EVENTS.iter().position(|e| e.id == id).ok_or_else(invalid)?;
-            let mut f = [0.; 3];
-            for v in &mut f {
-                *v = f32::from_le_bytes(b[at..at + 4].try_into().unwrap());
-                at += 4;
-            }
-            let quality = b[at];
-            at += 1;
-            if !f.iter().all(|v| v.is_finite())
-                || f[0].abs() > 180.
-                || !(0.7..=2.).contains(&f[1])
-                || !(0. ..=1e7).contains(&f[2])
-                || !(1..=3).contains(&quality)
-                || photos.iter().any(|p: &Photo| p.event == event)
-            {
-                return Err(invalid());
-            }
-            photos.push(Photo {
-                event,
-                heading: f[0],
-                zoom: f[1],
-                time: f[2],
-                quality,
-            });
-        }
-        if at != payload {
+            Ok(out)
+        };
+        let met = list(&person_index, PEOPLE.len())?;
+        let seen = list(&event_index, EVENTS.len())?;
+        if at != end {
             return Err(invalid());
         }
         Ok(Self {
-            year,
-            region,
-            selected,
-            photos,
+            era,
+            place,
+            visited,
+            met,
+            seen,
+            treasures,
         })
     }
 }
+
 fn checksum(b: &[u8]) -> u32 {
     b.iter()
         .fold(2166136261u32, |h, v| (h ^ *v as u32).wrapping_mul(16777619))
+}
+
+/// ミニマップ上の移動
+struct Travel {
+    points: Vec<(f32, f32)>,
+    target: usize,
+    at: usize,
+    t: f32,
+}
+
+/// 縦にずらせる領域
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scroll {
+    Atlas = 0,
+    Panel = 1,
+    Codex = 2,
+    Overlay = 3,
 }
 
 pub struct Game {
@@ -171,39 +287,35 @@ pub struct Game {
     world: Texture,
     journal: Journal,
     mode: Mode,
-    previous: Mode,
+    overlay: Overlay,
     buttons: Vec<Button>,
-    center: (f32, f32),
-    span: f32,
+    scroll_areas: Vec<([f32; 4], Scroll)>,
+    scroll: [f32; 4],
+    scroll_max: [f32; 4],
     mouse: (f32, f32),
     down: Option<(f32, f32)>,
     moved: f32,
-    heading: f32,
-    lens: f32,
     clock: f32,
-    flash: f32,
     toast: String,
     toast_left: f32,
     query: String,
     searching: bool,
-    list_offset: usize,
-    page: usize,
-    help: bool,
+    tab: Tab,
+    filter: Option<usize>,
+    reveal: bool,
+    pick: usize,
+    shift_t: f32,
+    shift_to: (usize, Option<usize>),
+    avatar: (f32, f32),
+    travel: Option<Travel>,
+    /// この起動中に試練の案内を出した時代
+    trial_offered: Vec<bool>,
     voice: bool,
-    powers: bool,
-    preview: Option<usize>,
     dirty: bool,
     save_in: f32,
-    thumbnails: Vec<(Photo, u32, Bitmap)>,
 }
+
 impl Game {
-    pub fn set_query(&mut self, query: String) {
-        self.query = query.chars().take(60).collect();
-        self.list_offset = 0;
-    }
-    pub fn search_visible(&self) -> bool {
-        !self.help
-    }
     pub fn new(gfx: Gfx) -> Self {
         let image = image::load_from_memory(include_bytes!("../assets/world.png"))
             .expect("offline map")
@@ -215,66 +327,91 @@ impl Game {
             .map(|p| u32::from_le_bytes([p[0], p[1], p[2], p[3]]))
             .collect();
         let world = gfx.create_texture(w, h, &data).expect("world texture");
+        let journal = Journal::new();
+        let p = &ERAS[0].places[ERAS[0].start];
         let mut g = Self {
             gfx,
             world,
-            journal: Journal::new(),
-            mode: Mode::Map,
-            previous: Mode::Map,
+            journal,
+            mode: Mode::Atlas,
+            overlay: Overlay::None,
             buttons: vec![],
-            center: (15., 0.),
-            span: 360.,
+            scroll_areas: vec![],
+            scroll: [0.; 4],
+            scroll_max: [0.; 4],
             mouse: (0., 0.),
             down: None,
             moved: 0.,
-            heading: 0.,
-            lens: 1.,
             clock: 0.,
-            flash: 0.,
             toast: String::new(),
             toast_left: 0.,
             query: String::new(),
             searching: false,
-            list_offset: 0,
-            page: 0,
-            help: false,
+            tab: Tab::People,
+            filter: None,
+            reveal: false,
+            pick: 0,
+            shift_t: 0.,
+            shift_to: (0, None),
+            avatar: (p.x, p.y),
+            travel: None,
+            trial_offered: vec![false; ERAS.len()],
             voice: platform::voice_enabled(),
-            powers: true,
-            preview: None,
             dirty: false,
             save_in: 0.,
-            thumbnails: vec![],
         };
         platform::load_slot(0);
-        g.notify("地図のピンか年表から出来事を選び、「上空へ」で旅を始めよう。");
+        g.notify("行き先の時代を選び、「転移する」でその時代へ渡ろう。");
         g
     }
+
+    // -------------------------------------------------------------- 外部とのつなぎ目
+    #[cfg_attr(windows, allow(dead_code))]
+    pub fn set_query(&mut self, query: String) {
+        self.query = query.chars().take(60).collect();
+        self.scroll[Scroll::Codex as usize] = 0.;
+    }
+    #[cfg_attr(windows, allow(dead_code))]
+    pub fn search_visible(&self) -> bool {
+        self.mode == Mode::Codex && self.overlay == Overlay::None
+    }
+    /// 検索欄の位置（UI 座標）
+    #[cfg_attr(windows, allow(dead_code))]
+    pub fn search_box(&self) -> [f32; 4] {
+        let w = self.gfx.width as f32;
+        let bw = if self.gfx.compact { 200. } else { 260. };
+        [w - bw - 20., 74., bw, 34.]
+    }
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn state_text(&self) -> String {
         format!(
-            "YYHistory {:?} {} region={} event={} photos={}",
+            "YYHistory {:?} era={} place={} met={} seen={}",
             self.mode,
-            self.journal.year,
-            self.journal.region,
-            EVENTS[self.journal.selected].id,
-            self.journal.photos.len()
+            ERAS[self.journal.era].id,
+            ERAS[self.journal.era].places[self.journal.place].id,
+            self.met_count(None),
+            self.seen_count(None)
         )
     }
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn crash_bytes(&self) -> Option<Vec<u8>> {
         Some(self.journal.bytes())
     }
     pub fn notify(&mut self, s: &str) {
         self.toast = s.to_string();
-        self.toast_left = 5.;
+        self.toast_left = 4.5;
     }
     pub fn apply_loaded(&mut self, b: &[u8]) {
         match Journal::read(b) {
             Ok(j) => {
                 self.journal = j;
-                self.thumbnails.clear();
-                self.fit_region();
-                self.mode = Mode::Map;
-                self.preview = None;
-                self.notify("写真帳を読み込みました。");
+                self.pick = self.journal.era;
+                self.travel = None;
+                let p = &ERAS[self.journal.era].places[self.journal.place];
+                self.avatar = (p.x, p.y);
+                self.mode = Mode::Atlas;
+                self.overlay = Overlay::None;
+                self.notify("旅の記録を読み込みました。");
             }
             Err(e) => self.notify(&e),
         }
@@ -284,9 +421,11 @@ impl Game {
             0,
             &self.journal.bytes(),
             &format!(
-                "YYHistory {} / {}枚",
-                year_text(self.journal.year),
-                self.journal.photos.len()
+                "YYHistory 人物{}/{} 出来事{}/{}",
+                self.met_count(None),
+                PEOPLE.len(),
+                self.seen_count(None),
+                EVENTS.len()
             ),
         );
         self.dirty = false;
@@ -295,84 +434,71 @@ impl Game {
         self.dirty = true;
         self.save_in = 0.8;
     }
-    fn sidebar(&self) -> f32 {
-        if self.gfx.compact {
-            270.
-        } else {
-            310.
+
+    /// その時代の人物と出来事をすべて集めたか
+    fn era_complete(&self, era: usize) -> bool {
+        PEOPLE
+            .iter()
+            .zip(&self.journal.met)
+            .all(|(p, m)| p.era != era || *m)
+            && EVENTS
+                .iter()
+                .zip(&self.journal.seen)
+                .all(|(e, m)| e.era != era || *m)
+    }
+    fn treasure_count(&self) -> usize {
+        self.journal.treasures.iter().filter(|t| **t).count()
+    }
+
+    /// 会話や観察を閉じたとき：その時代の情報がそろったら試練を始める
+    fn close_overlay(&mut self) {
+        self.overlay = Overlay::None;
+        platform::speak("");
+        let era = self.journal.era;
+        if self.mode == Mode::Field
+            && self.era_complete(era)
+            && !self.journal.treasures[era]
+            && !self.trial_offered[era]
+        {
+            self.trial_offered[era] = true;
+            self.overlay = Overlay::TrialIntro(era);
+            if self.voice {
+                platform::speak(
+                    "この時代の記録はすべて集まった。アカシックレコードの試練が始まる。",
+                );
+            }
         }
     }
-    fn area(&self) -> [f32; 4] {
-        [
-            self.sidebar(),
-            72.,
-            self.gfx.width as f32 - self.sidebar(),
-            self.gfx.height as f32 - 256.,
-        ]
+
+    fn met_count(&self, era: Option<usize>) -> usize {
+        PEOPLE
+            .iter()
+            .zip(&self.journal.met)
+            .filter(|(p, m)| **m && era.is_none_or(|e| p.era == e))
+            .count()
     }
-    fn fit_region(&mut self) {
-        let r = &REGIONS[self.journal.region];
-        self.center = (r.lon, r.lat);
-        self.span = r.span;
+    fn seen_count(&self, era: Option<usize>) -> usize {
+        EVENTS
+            .iter()
+            .zip(&self.journal.seen)
+            .filter(|(e, m)| **m && era.is_none_or(|x| e.era == x))
+            .count()
     }
-    fn filtered(&self) -> Vec<usize> {
-        let mut v = matching(self.journal.region, &self.query);
-        v.sort_by_key(|i| EVENTS[*i].year);
-        v
-    }
-    fn found(&self, i: usize) -> bool {
-        self.journal.photos.iter().any(|p| p.event == i)
-    }
-    fn select(&mut self, i: usize) {
-        self.journal.selected = i;
-        self.journal.year = EVENTS[i].year;
-        self.heading = 0.;
-        self.lens = 1.;
-        self.preview = None;
-        self.change();
-        if self.voice {
-            platform::speak(&format!(
-                "{}。{}。{}",
-                year_text(EVENTS[i].year),
-                EVENTS[i].title,
-                EVENTS[i].body
-            ));
-        }
-    }
-    fn set_year(&mut self, y: i32) {
-        self.journal.year = if y == 0 { 1 } else { y.clamp(-3000, 2000) };
-        self.change();
-    }
-    fn map_scale(&self) -> f32 {
-        let [_, _, w, h] = self.area();
-        (w / self.span).min((h - 170.).max(120.) / (self.span * 0.5))
-    }
-    fn project(&self, lon: f32, lat: f32) -> (f32, f32) {
-        let [x, y, w, h] = self.area();
-        let scale = self.map_scale();
-        let dx = (lon - self.center.0 + 180.).rem_euclid(360.) - 180.;
-        (
-            x + w / 2. + dx * scale,
-            y + (h - 170.) / 2. - (lat - self.center.1) * scale,
-        )
-    }
-    fn zoom(&mut self, f: f32) {
-        self.span = (self.span * f).clamp(8., 360.);
-    }
+
+    #[cfg_attr(windows, allow(dead_code))]
     pub fn hit_kind(&self, x: f32, y: f32) -> u32 {
         let (x, y) = (x / self.gfx.ui, y / self.gfx.ui);
-        if self.help
-            || self.buttons.iter().any(|b| inside(b.rect, x, y))
-            || y < 72.
-            || y > self.gfx.height as f32 - 184.
-        {
-            1
-        } else if x < self.sidebar() {
+        if self.buttons.iter().any(|b| inside(b.rect, x, y)) {
+            return 1;
+        }
+        if self.scroll_areas.iter().any(|(r, _)| inside(*r, x, y)) {
             3
         } else {
-            0
+            1
         }
     }
+
+    // -------------------------------------------------------------- 1フレーム
     pub fn frame(&mut self, evs: &[Ev], dt: f32, _focused: bool) -> bool {
         if let Some(b) = platform::take_loaded() {
             self.apply_loaded(&b);
@@ -381,11 +507,11 @@ impl Game {
             self.notify(&n);
         }
         self.clock = (self.clock + dt).min(1e7);
-        self.flash = (self.flash - dt * 2.).max(0.);
         self.toast_left -= dt;
         for e in evs {
             self.handle(*e);
         }
+        self.update(dt);
         if self.dirty {
             self.save_in -= dt;
             if self.save_in <= 0. {
@@ -395,163 +521,381 @@ impl Game {
         self.render();
         false
     }
-    fn act(&mut self, a: Act) {
-        match a {
-            Act::Region(r) => {
-                self.journal.region = r;
-                self.fit_region();
-                self.mode = Mode::Map;
-                self.list_offset = 0;
-                self.page = 0;
-                self.preview = None;
-                let v = self.filtered();
-                if !v.contains(&self.journal.selected) {
-                    if let Some(i) = v
-                        .iter()
-                        .min_by_key(|i| (EVENTS[**i].year - self.journal.year).abs())
-                    {
-                        self.select(*i);
+
+    fn update(&mut self, dt: f32) {
+        if self.mode == Mode::Shift {
+            self.shift_t += dt;
+            if self.shift_t >= 1.6 {
+                self.arrive();
+            }
+        }
+        if let Some(tr) = &mut self.travel {
+            // 地図の横幅は高さの1.6倍。見た目の速さを揃える
+            let mut left = dt * 0.32;
+            while left > 0. && tr.at + 1 < tr.points.len() {
+                let a = tr.points[tr.at];
+                let b = tr.points[tr.at + 1];
+                let len = (((b.0 - a.0) * 1.6).powi(2) + (b.1 - a.1).powi(2))
+                    .sqrt()
+                    .max(1e-4);
+                let need = (1. - tr.t) * len;
+                if left >= need {
+                    left -= need;
+                    tr.at += 1;
+                    tr.t = 0.;
+                } else {
+                    tr.t += left / len;
+                    left = 0.;
+                }
+            }
+            if tr.at + 1 >= tr.points.len() {
+                let target = tr.target;
+                self.avatar = *tr.points.last().unwrap();
+                self.travel = None;
+                self.journal.place = target;
+                self.scroll[Scroll::Panel as usize] = 0.;
+                self.change();
+                let place = &ERAS[self.journal.era].places[target];
+                let people = self.people_here().len();
+                let events = self.events_here().len();
+                self.notify(&format!(
+                    "{}に着いた。人物{}人・出来事{}件",
+                    place.name, people, events
+                ));
+            } else {
+                let a = tr.points[tr.at];
+                let b = tr.points[tr.at + 1];
+                self.avatar = (a.0 + (b.0 - a.0) * tr.t, a.1 + (b.1 - a.1) * tr.t);
+            }
+        }
+    }
+
+    /// 転移を終えて時代に着く
+    fn arrive(&mut self) {
+        let (era, place) = self.shift_to;
+        self.journal.era = era;
+        self.journal.place = place.unwrap_or(ERAS[era].start);
+        self.journal.visited[era] = true;
+        let p = &ERAS[era].places[self.journal.place];
+        self.avatar = (p.x, p.y);
+        self.travel = None;
+        self.mode = Mode::Field;
+        self.scroll[Scroll::Panel as usize] = 0.;
+        self.change();
+        self.notify(&format!(
+            "{}・{}に到着。地図の場所を選んで移動しよう。",
+            ERAS[era].years, ERAS[era].name
+        ));
+        if self.voice {
+            platform::speak(ERAS[era].intro);
+        }
+    }
+
+    fn people_here(&self) -> Vec<usize> {
+        let era = &ERAS[self.journal.era];
+        let id = era.places[self.journal.place].id;
+        (0..PEOPLE.len())
+            .filter(|i| PEOPLE[*i].era == self.journal.era && PEOPLE[*i].place == id)
+            .collect()
+    }
+    fn events_here(&self) -> Vec<usize> {
+        let era = &ERAS[self.journal.era];
+        let id = era.places[self.journal.place].id;
+        let mut v: Vec<usize> = (0..EVENTS.len())
+            .filter(|i| EVENTS[*i].era == self.journal.era && EVENTS[*i].place == id)
+            .collect();
+        v.sort_by_key(|i| event_key(*i));
+        v
+    }
+
+    /// 道をたどって場所へ向かう（幅優先探索）
+    fn goto(&mut self, target: usize) {
+        if self.mode != Mode::Field {
+            return;
+        }
+        let era = &ERAS[self.journal.era];
+        let from = match &self.travel {
+            Some(t) => t.target,
+            None => self.journal.place,
+        };
+        if target == from && self.travel.is_none() {
+            return;
+        }
+        let n = era.places.len();
+        let mut prev = vec![usize::MAX; n];
+        let mut queue = std::collections::VecDeque::from([from]);
+        prev[from] = from;
+        while let Some(a) = queue.pop_front() {
+            for &(x, y) in era.roads {
+                for (p, q) in [(x, y), (y, x)] {
+                    if p == a && prev[q] == usize::MAX {
+                        prev[q] = a;
+                        queue.push_back(q);
                     }
                 }
-                self.change();
             }
-            Act::Select(i) => {
-                self.select(i);
-                if self.mode == Mode::Album {
-                    self.mode = Mode::Map;
+        }
+        if prev[target] == usize::MAX {
+            return;
+        }
+        let mut path = vec![target];
+        while *path.last().unwrap() != from {
+            path.push(prev[*path.last().unwrap()]);
+        }
+        path.reverse();
+        let mut points = vec![self.avatar];
+        points.extend(
+            path.iter()
+                .skip(1)
+                .map(|i| (era.places[*i].x, era.places[*i].y)),
+        );
+        if points.len() == 1 {
+            points.push((era.places[target].x, era.places[target].y));
+        }
+        self.travel = Some(Travel {
+            points,
+            target,
+            at: 0,
+            t: 0.,
+        });
+    }
+
+    fn meet(&mut self, i: usize) {
+        let p = &PEOPLE[i];
+        if self.mode != Mode::Field
+            || self.travel.is_some()
+            || p.era != self.journal.era
+            || p.place != ERAS[self.journal.era].places[self.journal.place].id
+        {
+            self.notify("その人物のいる場所まで行こう。");
+            return;
+        }
+        self.overlay = Overlay::Meet(i, 0);
+        if !self.journal.met[i] {
+            self.journal.met[i] = true;
+            self.notify(&format!("{} を人物一覧表に登録しました。", p.name));
+            self.change();
+        }
+        if self.voice {
+            platform::speak(p.lines[0]);
+        }
+    }
+
+    fn observe(&mut self, i: usize) {
+        let e = &EVENTS[i];
+        if self.mode != Mode::Field
+            || self.travel.is_some()
+            || e.era != self.journal.era
+            || e.place != ERAS[self.journal.era].places[self.journal.place].id
+        {
+            self.notify("その出来事が起きた場所まで行こう。");
+            return;
+        }
+        self.overlay = Overlay::Observe(i);
+        self.scroll[Scroll::Overlay as usize] = 0.;
+        if !self.journal.seen[i] {
+            self.journal.seen[i] = true;
+            self.notify(&format!("「{}」を出来事集と年表に記録しました。", e.title));
+            self.change();
+        }
+        if self.voice {
+            platform::speak(&format!("{}。{}。{}", e.date, e.title, e.body.join("")));
+        }
+    }
+
+    fn act(&mut self, a: Act) {
+        match a {
+            Act::Atlas => {
+                self.mode = Mode::Atlas;
+                self.overlay = Overlay::None;
+                self.travel = None;
+                self.pick = self.journal.era;
+            }
+            Act::Codex => {
+                self.mode = Mode::Codex;
+                self.overlay = Overlay::None;
+                self.scroll[Scroll::Codex as usize] = 0.;
+            }
+            Act::PickEra(i) => {
+                self.pick = i;
+                if self.voice {
+                    platform::speak(ERAS[i].intro);
                 }
             }
-            Act::Visit => {
-                self.mode = Mode::Aerial;
-                self.preview = None;
-                self.journal.year = EVENTS[self.journal.selected].year;
-                self.heading = 0.;
-                self.lens = 1.;
-                self.change();
+            Act::Shift(era, place) => {
+                self.overlay = Overlay::None;
+                self.shift_to = (era, place);
+                self.shift_t = 0.;
+                self.mode = Mode::Shift;
+                self.travel = None;
+                platform::speak("");
             }
-            Act::Street => {
-                self.mode = Mode::Street;
-                self.preview = None;
-                self.heading = 0.;
-                self.lens = 1.;
+            Act::Goto(p) => self.goto(p),
+            Act::Meet(i) => self.meet(i),
+            Act::Observe(i) => self.observe(i),
+            Act::Next => match self.overlay {
+                Overlay::Meet(i, page) => {
+                    if page + 1 < PEOPLE[i].lines.len() {
+                        self.overlay = Overlay::Meet(i, page + 1);
+                        if self.voice {
+                            platform::speak(PEOPLE[i].lines[page + 1]);
+                        }
+                    } else {
+                        self.close_overlay();
+                    }
+                }
+                Overlay::None => (),
+                Overlay::TrialIntro(era) => self.act(Act::Begin(era)),
+                Overlay::Trial(_, _, Some(_), _) => self.act(Act::TrialNext),
+                Overlay::Trial(..) => (),
+                _ => self.close_overlay(),
+            },
+            Act::Prev => {
+                if let Overlay::Meet(i, page) = self.overlay {
+                    self.overlay = Overlay::Meet(i, page.saturating_sub(1));
+                }
             }
-            Act::World => {
-                self.mode = Mode::Map;
-                self.journal.region = 0;
-                self.fit_region();
-                self.list_offset = 0;
-                self.change();
-            }
-            Act::Mode(m) => {
-                self.mode = m;
-                self.preview = None;
-                self.page = 0;
-            }
-            Act::Zoom(f) => {
-                if self.mode == Mode::Map {
-                    self.zoom(f);
+            Act::Close => self.close_overlay(),
+            Act::TrialIntro(era) => {
+                if self.era_complete(era) {
+                    self.overlay = Overlay::TrialIntro(era);
                 } else {
-                    self.lens = (self.lens / f).clamp(0.7, 2.);
+                    self.notify("この時代の人物と出来事をすべて集めると、試練に挑める。");
                 }
             }
-            Act::Back => {
-                if self.preview.take().is_none() {
-                    self.mode = match self.mode {
-                        Mode::Street => Mode::Aerial,
-                        Mode::Aerial | Mode::Album => Mode::Map,
-                        Mode::Map => Mode::Map,
-                    };
+            Act::Begin(era) => {
+                if self.era_complete(era) {
+                    self.overlay = Overlay::Trial(era, 0, None, 0);
+                    self.speak_question();
                 }
             }
-            Act::Turn(d) => {
-                self.heading = (self.heading + d + 180.).rem_euclid(360.) - 180.;
-            }
-            Act::Capture => self.capture(),
-            Act::Search => self.searching = true,
-            Act::Prev(d) => {
-                let v = self.filtered();
-                if !v.is_empty() {
-                    let at = v
-                        .iter()
-                        .position(|i| *i == self.journal.selected)
-                        .unwrap_or(0) as i32;
-                    self.select(v[(at + d).rem_euclid(v.len() as i32) as usize]);
+            Act::Answer(k) => {
+                if let Overlay::Trial(era, q, None, score) = self.overlay {
+                    let quiz = &QUIZZES[quizzes(era)[q]];
+                    let ok = k == quiz.answer;
+                    self.overlay = Overlay::Trial(era, q, Some(k), score + ok as usize);
+                    if self.voice {
+                        platform::speak(&format!(
+                            "{}。{}",
+                            if ok { "正解" } else { "不正解" },
+                            quiz.note
+                        ));
+                    }
                 }
             }
-            Act::Page(d) => {
-                self.page = (self.page as i32 + d).max(0) as usize;
+            Act::TrialNext => {
+                if let Overlay::Trial(era, q, Some(_), score) = self.overlay {
+                    let n = quizzes(era).len();
+                    if q + 1 < n {
+                        self.overlay = Overlay::Trial(era, q + 1, None, score);
+                        self.speak_question();
+                    } else {
+                        self.overlay = Overlay::TrialResult(era, score);
+                        if score == n {
+                            let first = !self.journal.treasures[era];
+                            self.journal.treasures[era] = true;
+                            self.save();
+                            if first {
+                                self.notify(&format!("秘宝を手に入れた：{}", treasure(era).name));
+                            }
+                        }
+                        if self.voice {
+                            platform::speak(&if score == n {
+                                format!("全問正解。秘宝、{}を手に入れた。", treasure(era).name)
+                            } else {
+                                format!("{}問中{}問正解。", n, score)
+                            });
+                        }
+                    }
+                }
+            }
+            Act::Treasure(era) => {
+                self.overlay = Overlay::Treasure(era);
+                self.scroll[Scroll::Overlay as usize] = 0.;
+            }
+            Act::Tab(t) => {
+                self.tab = t;
+                self.scroll[Scroll::Codex as usize] = 0.;
+            }
+            Act::Filter(f) => {
+                self.filter = f;
+                self.scroll[Scroll::Codex as usize] = 0.;
+            }
+            Act::Detail(e) => {
+                self.overlay = Overlay::Detail(e);
+                self.scroll[Scroll::Overlay as usize] = 0.;
+            }
+            Act::Help => {
+                self.overlay = Overlay::Help;
+                self.scroll[Scroll::Overlay as usize] = 0.;
+            }
+            Act::Voice => {
+                self.voice = !self.voice;
+                platform::save_voice(self.voice);
+                if !self.voice {
+                    platform::speak("");
+                }
             }
             Act::Export => {
                 self.save();
                 platform::export_slot(0);
             }
             Act::Import => platform::import_file(),
-            Act::Help => {
-                self.help = true;
-            }
-            Act::Close => {
-                self.help = false;
-                self.preview = None;
-            }
-            Act::Voice => {
-                self.voice = !self.voice;
-                platform::save_voice(self.voice);
-                if self.voice {
-                    platform::speak(EVENTS[self.journal.selected].body);
-                } else {
-                    platform::speak("");
-                }
-            }
-            Act::Photo(i) => {
-                self.previous = self.mode;
-                self.preview = Some(i);
-            }
-            Act::Year(y) => self.set_year(y),
-            Act::Powers => self.powers = !self.powers,
+            Act::Reveal => self.reveal = !self.reveal,
+            Act::Search => self.searching = true,
         }
     }
-    fn capture(&mut self) {
-        if self.mode != Mode::Street || self.preview.is_some() {
-            self.notify("出来事の現場に降りて、風景を撮影しよう。");
+
+    fn speak_question(&self) {
+        if let (true, Overlay::Trial(era, q, None, _)) = (self.voice, self.overlay) {
+            let quiz = &QUIZZES[quizzes(era)[q]];
+            platform::speak(&format!(
+                "第{}問。{}。1、{}。2、{}。3、{}。4、{}。",
+                q + 1,
+                quiz.q,
+                quiz.choices[0],
+                quiz.choices[1],
+                quiz.choices[2],
+                quiz.choices[3]
+            ));
+        }
+    }
+
+    /// 矢印キー：その向きにある、道でつながった場所へ
+    fn step(&mut self, dx: f32, dy: f32) {
+        if self.mode != Mode::Field || self.overlay != Overlay::None {
             return;
         }
-        if self.heading.abs() > 70. {
-            self.notify("目標がフレームの外です。矢印で正面（0°）へ向き直ろう。");
-            return;
-        }
-        let quality = if self.heading.abs() < 18. && self.lens >= 1. {
-            3
-        } else if self.heading.abs() < 42. {
-            2
-        } else {
-            1
-        };
-        let p = Photo {
-            event: self.journal.selected,
-            heading: self.heading,
-            zoom: self.lens,
-            time: self.clock,
-            quality,
-        };
-        if let Some(old) = self
-            .journal
-            .photos
-            .iter_mut()
-            .find(|old| old.event == p.event)
-        {
-            if old.quality <= quality {
-                *old = p;
-                self.notify("写真を更新しました。地域別年表に保存しました。");
+        let era = &ERAS[self.journal.era];
+        let from = self
+            .travel
+            .as_ref()
+            .map_or(self.journal.place, |t| t.target);
+        let a = &era.places[from];
+        let mut best = None;
+        let mut score = 0.3;
+        for &(x, y) in era.roads {
+            let other = if x == from {
+                y
+            } else if y == from {
+                x
             } else {
-                self.notify("撮影しました。写真帳には、よりよく撮れた写真を残しました。");
+                continue;
+            };
+            let b = &era.places[other];
+            let (vx, vy) = ((b.x - a.x) * 1.6, b.y - a.y);
+            let l = (vx * vx + vy * vy).sqrt().max(1e-4);
+            let s = (vx * dx + vy * dy) / l;
+            if s > score {
+                score = s;
+                best = Some(other);
             }
-        } else {
-            self.journal.photos.push(p);
-            self.notify("新しい歴史写真！ 地域別年表に収録しました。");
         }
-        self.flash = 1.;
-        self.save();
+        if let Some(b) = best {
+            self.goto(b);
+        }
     }
+
     fn handle(&mut self, e: Ev) {
         let ui = self.gfx.ui;
         match e {
@@ -564,96 +908,35 @@ impl Game {
             }
             Ev::MouseMove(x, y) => {
                 let (x, y) = (x / ui, y / ui);
-                let (dx, dy) = (x - self.mouse.0, y - self.mouse.1);
-                if let Some((sx, sy)) = self.down {
-                    self.moved += dx.abs() + dy.abs();
-                    let a = self.area();
-                    if !self.help
-                        && sx > a[0]
-                        && sy > a[1] + 70.
-                        && sy < a[1] + a[3] - 65.
-                        && self.preview.is_none()
-                    {
-                        if self.mode == Mode::Map {
-                            let scale = self.map_scale();
-                            self.center.0 =
-                                (self.center.0 - dx / scale + 180.).rem_euclid(360.) - 180.;
-                            self.center.1 = (self.center.1 + dy / scale).clamp(-70., 80.);
-                        } else if self.mode == Mode::Street {
-                            self.heading =
-                                (self.heading - dx * 0.25 + 180.).rem_euclid(360.) - 180.;
-                        }
-                    } else if sy > self.gfx.height as f32 - 69. && sy < self.gfx.height as f32 - 35.
-                    {
-                        self.slider(x);
+                if let Some(start) = self.down {
+                    self.moved += (x - self.mouse.0).abs() + (y - self.mouse.1).abs();
+                    // マウスでのドラッグは一覧のスクロールに使う
+                    if let Some(s) = self.scroll_at(start) {
+                        self.scroll_by(s, self.mouse.1 - y);
                     }
                 }
                 self.mouse = (x, y);
             }
             Ev::Up(0, x, y) => {
                 let (x, y) = (x / ui, y / ui);
-                if self.down.take().is_some() && self.moved < 7. {
-                    if let Some(act) = self
-                        .buttons
-                        .iter()
-                        .rev()
-                        .find(|b| inside(b.rect, x, y))
-                        .map(|b| b.act)
-                    {
-                        self.searching = false;
-                        self.act(act);
-                    } else if !self.help {
-                        self.searching = false;
-                        if y > self.gfx.height as f32 - 69. && y < self.gfx.height as f32 - 35. {
-                            self.slider(x);
-                        } else if self.mode == Mode::Map && x > self.sidebar() {
-                            let mut nearest = None;
-                            let mut dist = 22.;
-                            for i in self.filtered() {
-                                let e = &EVENTS[i];
-                                let (px, py) = self.project(e.lon, e.lat);
-                                let dd = ((px - x).powi(2) + (py - y).powi(2)).sqrt();
-                                if dd < dist {
-                                    nearest = Some(i);
-                                    dist = dd;
-                                }
-                            }
-                            if let Some(i) = nearest {
-                                self.select(i);
-                            }
-                        }
-                    }
+                if self.down.take().is_some() && self.moved < 8. {
+                    self.click(x, y);
                 }
             }
             Ev::Wheel(d) => {
-                if self.help {
-                    return;
-                }
-                if self.mouse.0 < self.sidebar() {
-                    let n = self.filtered().len();
-                    self.list_offset = (self.list_offset as i32 - if d > 0. { 1 } else { -1 })
-                        .clamp(0, n.saturating_sub(1) as i32)
-                        as usize;
-                } else if self.mode == Mode::Album {
-                    self.page = (self.page as i32 - if d > 0. { 1 } else { -1 })
-                        .clamp(0, self.album_pages().saturating_sub(1) as i32)
-                        as usize;
-                } else {
-                    self.act(Act::Zoom(if d > 0. { 0.8 } else { 1.25 }));
+                if let Some(s) = self.scroll_at(self.mouse) {
+                    self.scroll_by(s, -d * 60.);
                 }
             }
             Ev::Scroll(d) => {
-                if self.mouse.0 < self.sidebar() {
-                    let n = self.filtered().len();
-                    self.list_offset = (self.list_offset as i32 + (d / 25.) as i32)
-                        .clamp(0, n.saturating_sub(1) as i32)
-                        as usize;
+                if let Some(s) = self.scroll_at(self.mouse) {
+                    self.scroll_by(s, -d / ui);
                 }
             }
             Ev::Char(c) => {
                 if self.searching && !c.is_control() && self.query.chars().count() < 60 {
                     self.query.push(c);
-                    self.list_offset = 0;
+                    self.scroll[Scroll::Codex as usize] = 0.;
                 }
             }
             Ev::Key(k, true) => {
@@ -661,37 +944,74 @@ impl Game {
                     match k {
                         8 => {
                             self.query.pop();
-                            self.list_offset = 0;
                         }
                         13 | 27 => self.searching = false,
                         _ => (),
                     }
                     return;
                 }
-                if self.help {
-                    if k == 27 || k == 13 {
-                        self.help = false;
+                if let Overlay::Trial(_, _, None, _) = self.overlay {
+                    match k {
+                        49..=52 => return self.act(Act::Answer((k - 49) as usize)),
+                        97..=100 => return self.act(Act::Answer((k - 97) as usize)),
+                        _ => (),
                     }
-                    return;
                 }
                 match k {
-                    27 => self.act(Act::Back),
-                    13 => self.act(if self.mode == Mode::Aerial {
-                        Act::Street
-                    } else {
-                        Act::Visit
-                    }),
-                    32 => self.capture(),
-                    37 | 65 => self.act(Act::Turn(-15.)),
-                    39 | 68 => self.act(Act::Turn(15.)),
-                    38 | 87 => self.act(Act::Zoom(0.9)),
-                    40 | 83 => self.act(Act::Zoom(1.1)),
-                    0xbb | 0x6b => self.act(Act::Zoom(0.8)),
-                    0xbd | 0x6d => self.act(Act::Zoom(1.25)),
-                    0xbc => self.act(Act::Prev(-1)),
-                    0xbe => self.act(Act::Prev(1)),
-                    0x71 => self.act(Act::Mode(Mode::Album)),
-                    0x72 => self.help = true,
+                    27 => {
+                        if self.overlay != Overlay::None {
+                            self.act(Act::Close);
+                        } else if self.mode == Mode::Codex {
+                            self.mode = if self.journal.visited.iter().any(|v| *v) {
+                                Mode::Field
+                            } else {
+                                Mode::Atlas
+                            };
+                        } else if self.mode == Mode::Field {
+                            self.act(Act::Atlas);
+                        }
+                    }
+                    13 | 32 => {
+                        if self.overlay != Overlay::None {
+                            self.act(Act::Next);
+                        } else if self.mode == Mode::Atlas {
+                            self.act(Act::Shift(self.pick, None));
+                        }
+                    }
+                    37 | 65 => {
+                        if let Overlay::Meet(..) = self.overlay {
+                            self.act(Act::Prev);
+                        } else if self.mode == Mode::Atlas {
+                            self.pick = (self.pick + ERAS.len() - 1) % ERAS.len();
+                        } else {
+                            self.step(-1., 0.);
+                        }
+                    }
+                    39 | 68 => {
+                        if let Overlay::Meet(..) = self.overlay {
+                            self.act(Act::Next);
+                        } else if self.mode == Mode::Atlas {
+                            self.pick = (self.pick + 1) % ERAS.len();
+                        } else {
+                            self.step(1., 0.);
+                        }
+                    }
+                    38 | 87 => {
+                        if self.mode == Mode::Atlas {
+                            self.pick = (self.pick + ERAS.len() - 1) % ERAS.len();
+                        } else {
+                            self.step(0., -1.);
+                        }
+                    }
+                    40 | 83 => {
+                        if self.mode == Mode::Atlas {
+                            self.pick = (self.pick + 1) % ERAS.len();
+                        } else {
+                            self.step(0., 1.);
+                        }
+                    }
+                    0x71 => self.act(Act::Codex),
+                    0x72 => self.act(Act::Help),
                     0x7a => self.gfx.toggle_fullscreen(),
                     _ => (),
                 }
@@ -699,1155 +1019,3651 @@ impl Game {
             _ => (),
         }
     }
-    fn slider(&mut self, x: f32) {
-        let start = self.sidebar() + 92.;
-        let end = self.gfx.width as f32 - 40.;
-        if end > start {
-            let t = ((x - start) / (end - start)).clamp(0., 1.);
-            self.set_year((-3000. + t * 5000.).round() as i32);
+
+    fn scroll_at(&self, p: (f32, f32)) -> Option<Scroll> {
+        self.scroll_areas
+            .iter()
+            .rev()
+            .find(|(r, _)| inside(*r, p.0, p.1))
+            .map(|(_, s)| *s)
+    }
+    fn scroll_by(&mut self, s: Scroll, d: f32) {
+        let i = s as usize;
+        self.scroll[i] = (self.scroll[i] + d).clamp(0., self.scroll_max[i].max(0.));
+    }
+
+    fn click(&mut self, x: f32, y: f32) {
+        if let Some(act) = self
+            .buttons
+            .iter()
+            .rev()
+            .find(|b| inside(b.rect, x, y))
+            .map(|b| b.act)
+        {
+            self.searching = false;
+            self.act(act);
+            return;
+        }
+        self.searching = false;
+        if self.overlay != Overlay::None {
+            // 会話の枠の外を押したら次へ進む
+            if let Overlay::Meet(..) = self.overlay {
+                self.act(Act::Next);
+            }
+            return;
+        }
+        if self.mode == Mode::Field {
+            let r = self.map_rect();
+            if inside(r, x, y) {
+                let era = &ERAS[self.journal.era];
+                let mut best = None;
+                let mut dist = 34.;
+                for (i, p) in era.places.iter().enumerate() {
+                    let (px, py) = (r[0] + p.x * r[2], r[1] + p.y * r[3]);
+                    let d = ((px - x).powi(2) + (py - y).powi(2)).sqrt();
+                    if d < dist {
+                        dist = d;
+                        best = Some(i);
+                    }
+                }
+                if let Some(i) = best {
+                    self.goto(i);
+                }
+            }
         }
     }
-    fn label(&mut self, s: &str, x: f32, y: f32, w: f32, h: f32, font: Font, c: [f32; 4]) {
-        self.gfx.text(s, x, y, w, h, font, c);
+
+    // -------------------------------------------------------------- 配置
+    fn top(&self) -> f32 {
+        if self.gfx.compact {
+            50.
+        } else {
+            60.
+        }
+    }
+    fn panel_w(&self) -> f32 {
+        let w = self.gfx.width as f32;
+        if self.gfx.compact {
+            (w * 0.36).clamp(300., 380.)
+        } else {
+            (w * 0.27).clamp(340., 420.)
+        }
+    }
+    /// ミニマップの紙面（縦横比 1.6:1）
+    fn map_rect(&self) -> [f32; 4] {
+        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
+        let top = self.top();
+        let aw = w - self.panel_w() - 28.;
+        let ah = h - top - 52.;
+        let mw = aw.min(ah * 1.6);
+        let mh = mw / 1.6;
+        [14. + (aw - mw) / 2., top + 12. + (ah - mh) / 2., mw, mh]
+    }
+    fn atlas_list_w(&self) -> f32 {
+        if self.gfx.compact {
+            300.
+        } else {
+            360.
+        }
+    }
+    /// 世界地図の表示範囲（経度・緯度）を画面に合わせる
+    fn atlas_view(&self) -> (f32, f32, f32) {
+        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
+        let x0 = self.atlas_list_w();
+        let top = self.top();
+        let card = if self.gfx.compact { 150. } else { 176. };
+        let aw = w - x0;
+        let ah = h - top - card;
+        let scale = (aw / 300.).min(ah / 88.);
+        // 経度 -125〜175、緯度 70〜-18 を中心に収める
+        let cx = x0 + aw / 2. - 25. * scale;
+        let cy = top + ah / 2. + 26. * scale;
+        (scale, cx, cy)
+    }
+    fn atlas_project(&self, lon: f32, lat: f32) -> (f32, f32) {
+        let (s, cx, cy) = self.atlas_view();
+        (cx + lon * s, cy - lat * s)
+    }
+
+    // -------------------------------------------------------------- 描画の部品
+    fn text(&mut self, s: &str, x: f32, y: f32, w: f32, h: f32, f: Font, c: [f32; 4]) {
+        self.gfx.text(s, x, y, w, h, f, c);
     }
     fn button(&mut self, s: &str, r: [f32; 4], a: Act, active: bool) {
         let [x, y, w, h] = r;
         let hover = inside(r, self.mouse.0, self.mouse.1);
-        self.gfx.fill_round(
-            x,
-            y,
-            x + w,
-            y + h,
-            7.,
-            if active {
-                GREEN
-            } else if hover {
-                [0.90, 0.92, 0.87, 1.]
-            } else {
-                WHITE
-            },
-        );
+        let fill = if active {
+            mix(GOLD, [0.6, 0.45, 0.2, 1.], 0.15)
+        } else if hover {
+            [0.20, 0.28, 0.43, 1.]
+        } else {
+            PANEL2
+        };
+        self.gfx.fill_round(x, y, x + w, y + h, 6., fill);
         self.gfx.stroke_round(
-            x,
-            y,
-            x + w,
-            y + h,
-            7.,
+            x + 0.5,
+            y + 0.5,
+            x + w - 0.5,
+            y + h - 0.5,
+            6.,
             1.,
-            if active { GREEN } else { LINE },
+            if active { GOLD } else { EDGE },
         );
-        self.label(
+        self.text(
             s,
-            x + 6.,
-            y + 2.,
-            w - 12.,
-            h - 4.,
+            x + 4.,
+            y + 1.,
+            w - 8.,
+            h - 2.,
             Font::NormalCenter,
-            if active { WHITE } else { INK },
+            if active { NIGHT } else { TEXT },
         );
         self.buttons.push(Button { rect: r, act: a });
     }
-    fn render(&mut self) {
-        self.buttons.clear();
-        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
-        let side = self.sidebar();
-        let area = self.area();
-        self.gfx.begin(PAPER);
-        self.gfx.set_screen_xform();
-        for p in &self.journal.photos {
-            if !self
-                .thumbnails
-                .iter()
-                .any(|(q, gen, _)| q == p && *gen == self.gfx.d2d_gen)
-            {
-                let pixels =
-                    scene::thumbnail(&mut self.gfx, &EVENTS[p.event], p.heading, p.zoom, p.time);
-                if let Some(bmp) = self.gfx.create_bitmap(320, 180, &pixels) {
-                    self.thumbnails.retain(|(q, _, _)| q.event != p.event);
-                    self.thumbnails.push((p.clone(), self.gfx.d2d_gen, bmp));
+    /// 人物の肖像の代わりの紋章（名前の頭文字）
+    fn medallion(&mut self, name: &str, x: f32, y: f32, r: f32, c: [f32; 4], known: bool) {
+        self.gfx
+            .fill_circle(x, y, r + 2., if known { GOLD } else { LOCKED });
+        self.gfx.fill_circle(
+            x,
+            y,
+            r,
+            if known {
+                mix(NIGHT, c, 0.55)
+            } else {
+                [0.14, 0.18, 0.26, 1.]
+            },
+        );
+        if known {
+            if let Some(p) = PEOPLE.iter().find(|p| p.name == name) {
+                if let Some(img) = self.gfx.image(&images::portrait(p.id)) {
+                    self.gfx.clip_round(x - r, y - r, x + r, y + r, r);
+                    self.gfx.draw_image(&img, x - r, y - r, x + r, y + r, 1.);
+                    self.gfx.clip_end();
+                    self.gfx.stroke_circle(x, y, r, 1.5, GOLD);
+                    return;
                 }
             }
         }
-        match self.mode {
-            Mode::Map => self.map_geometry(),
-            Mode::Aerial | Mode::Street => scene::draw(
-                &mut self.gfx,
-                &EVENTS[self.journal.selected],
-                area,
-                self.mode == Mode::Aerial,
-                self.heading,
-                self.lens,
-                self.clock,
-            ),
-            Mode::Album => self.album_geometry(),
+        self.gfx.stroke_circle(x, y, r - 3., 1., alpha(TEXT, 0.25));
+        let ch: String = if known {
+            name.chars().next().unwrap_or('？').to_string()
+        } else {
+            "？".to_string()
+        };
+        let font = if r > 26. {
+            Font::BigCenter
+        } else {
+            Font::NormalCenter
+        };
+        self.text(
+            &ch,
+            x - r,
+            y - r,
+            r * 2.,
+            r * 2.,
+            font,
+            if known { TEXT } else { MUTED },
+        );
+    }
+    fn panel_box(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        self.gfx.fill_round(x0, y0, x1, y1, 10., PANEL);
+        self.gfx
+            .stroke_round(x0 + 0.5, y0 + 0.5, x1 - 0.5, y1 - 0.5, 10., 1., EDGE);
+        // 角の飾り
+        let (l, t) = (18., 3.);
+        for (cx, cy, sx, sy) in [
+            (x0, y0, 1f32, 1f32),
+            (x1, y0, -1., 1.),
+            (x0, y1, 1., -1.),
+            (x1, y1, -1., -1.),
+        ] {
+            let (ax, ay) = (cx + sx * 4., cy + sy * 4.);
+            let (bx, by) = (ax + sx * l, ay + sy * t);
+            self.gfx
+                .fill_rect(ax.min(bx), ay.min(by), ax.max(bx), ay.max(by), GOLD);
+            let (bx, by) = (ax + sx * t, ay + sy * l);
+            self.gfx
+                .fill_rect(ax.min(bx), ay.min(by), ax.max(bx), ay.max(by), GOLD);
         }
-        if let Some(i) = self.preview {
-            let p = &self.journal.photos[i];
-            scene::draw(
-                &mut self.gfx,
-                &EVENTS[p.event],
-                [side + 24., 132., w - side - 48., h - 380.],
-                false,
-                p.heading,
-                p.zoom,
-                p.time,
-            );
+    }
+
+    // -------------------------------------------------------------- 描画
+    fn render(&mut self) {
+        self.buttons.clear();
+        self.scroll_areas.clear();
+        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
+        self.gfx.begin(NIGHT);
+        self.gfx.set_screen_xform();
+        match self.mode {
+            Mode::Atlas | Mode::Shift => self.atlas_geometry(),
+            Mode::Field => self.field_geometry(),
+            Mode::Codex => (),
         }
         self.gfx.flush();
         if !self.gfx.d2d_begin() {
             return;
         }
-        self.gfx.fill_rect(0., 0., w, 72., PAPER);
-        self.gfx.fill_rect(0., 72., side, h, PAPER);
-        self.gfx.fill_rect(side, h - 184., w, h, PAPER);
-        self.gfx.stroke_rect(side, 72., side + 1., h, 1., LINE);
-        self.gfx.stroke_rect(0., 71., w, 72., 1., LINE);
-        self.label("YYHistory", 24., 13., 220., 34., Font::TitleMid, GREEN);
-        self.label(
-            "時を歩く、歴史を撮る",
-            27.,
-            48.,
-            230.,
-            17.,
-            Font::Small,
-            MUTED,
-        );
-        self.button(
-            "地図",
-            [side + 22., 19., 64., 34.],
-            Act::Mode(Mode::Map),
-            self.mode == Mode::Map,
-        );
-        self.button(
-            "写真帳",
-            [side + 94., 19., 86., 34.],
-            Act::Mode(Mode::Album),
-            self.mode == Mode::Album,
-        );
-        self.label(
-            &format!(
-                "{} / {} の出来事を記録",
-                self.journal.photos.len(),
-                EVENTS.len()
-            ),
-            side + 202.,
-            25.,
-            260.,
-            25.,
-            Font::Normal,
-            MUTED,
-        );
-        self.button("書き出し", [w - 336., 19., 88., 34.], Act::Export, false);
-        self.button("読み込み", [w - 240., 19., 88., 34.], Act::Import, false);
-        self.button("使い方", [w - 144., 19., 72., 34.], Act::Help, self.help);
-        self.button(
-            if self.voice { "声 ON" } else { "声 OFF" },
-            [w - 65., 19., 60., 34.],
-            Act::Voice,
-            self.voice,
-        );
-        self.sidebar_ui();
-        if self.preview.is_some() {
-            self.preview_ui();
-        } else {
-            match self.mode {
-                Mode::Map => self.map_ui(),
-                Mode::Aerial | Mode::Street => self.scene_ui(),
-                Mode::Album => self.album_ui(),
+        match self.mode {
+            Mode::Atlas => self.atlas_ui(),
+            Mode::Shift => {
+                self.atlas_ui();
+                self.buttons.clear();
+                self.scroll_areas.clear();
             }
+            Mode::Field => self.field_ui(),
+            Mode::Codex => self.codex_ui(),
         }
-        self.timeline();
-        if self.toast_left > 0. {
-            let tw = (w - side - 160.).min(650.);
-            let tx = side + (w - side - tw) / 2.;
+        self.top_bar();
+        if self.overlay != Overlay::None || self.mode == Mode::Shift {
+            self.buttons.clear();
+            self.scroll_areas.clear();
+        }
+        match self.overlay {
+            Overlay::None => (),
+            Overlay::Meet(i, page) => self.meet_ui(i, page),
+            Overlay::Observe(i) => self.observe_ui(i),
+            Overlay::Detail(e) => self.detail_ui(e),
+            Overlay::Help => self.help_ui(),
+            Overlay::TrialIntro(era) => self.trial_intro_ui(era),
+            Overlay::Trial(era, q, pick, score) => self.trial_ui(era, q, pick, score),
+            Overlay::TrialResult(era, score) => self.trial_result_ui(era, score),
+            Overlay::Treasure(era) => self.treasure_ui(era),
+        }
+        if self.mode == Mode::Shift {
+            self.shift_ui();
+        }
+        if self.toast_left > 0. && self.mode != Mode::Shift {
+            let tw = (w * 0.55).min(640.);
+            let tx = (w - tw) / 2.;
+            let ty = if self.gfx.compact {
+                self.top() + 6.
+            } else {
+                h - 46.
+            };
+            let a = self.toast_left.min(1.);
             self.gfx.fill_round(
                 tx,
-                h - 232.,
+                ty,
                 tx + tw,
-                h - 193.,
+                ty + 34.,
                 8.,
-                [0.13, 0.24, 0.22, 0.95],
+                alpha([0.10, 0.16, 0.27, 0.95], a),
             );
-            self.label(
-                &self.toast.clone(),
-                tx + 12.,
-                h - 225.,
-                tw - 24.,
+            self.gfx
+                .stroke_round(tx, ty, tx + tw, ty + 34., 8., 1., alpha(GOLD, a));
+            let t = self.toast.clone();
+            self.text(
+                &t,
+                tx + 10.,
+                ty + 4.,
+                tw - 20.,
                 26.,
                 Font::NormalCenter,
-                WHITE,
+                alpha(TEXT, a),
             );
-        }
-        if self.flash > 0. {
-            self.gfx
-                .fill_rect(side, 72., w, h - 184., [1., 1., 1., self.flash * 0.65]);
-        }
-        if self.help {
-            self.help_ui();
         }
         self.gfx.d2d_end();
         self.gfx.present();
     }
-    fn sidebar_ui(&mut self) {
-        let side = self.sidebar();
-        let h = self.gfx.height as f32;
-        self.label(
-            "歴史を探しにいこう",
-            20.,
-            88.,
-            side - 40.,
-            28.,
-            Font::Big,
-            INK,
+
+    fn top_bar(&mut self) {
+        let w = self.gfx.width as f32;
+        let top = self.top();
+        let compact = self.gfx.compact;
+        self.gfx.fill_rect(0., 0., w, top, [0.06, 0.09, 0.16, 1.]);
+        self.gfx
+            .fill_rect(0., top - 2., w, top - 1., alpha(GOLD, 0.7));
+        self.text(
+            "YYHistory",
+            18.,
+            if compact { 6. } else { 8. },
+            200.,
+            30.,
+            Font::TitleMid,
+            GOLD,
         );
-        let prompt = if self.query.is_empty() {
-            if self.searching {
-                "入力してください…"
-            } else {
-                "地名・出来事・年代で検索"
-            }
-        } else {
-            &self.query
-        };
-        self.button(
-            &prompt.to_string(),
-            [18., 127., side - 36., 39.],
-            Act::Search,
-            self.searching,
-        );
-        for r in 0..REGIONS.len() {
-            let x = 18. + (r % 2) as f32 * (side - 30.) / 2.;
-            let y = 180. + (r / 2) as f32 * 37.;
-            self.button(
-                match r {
-                    4 => "中東・北アフリカ",
-                    7 => "アフリカ・大洋州",
-                    _ => REGIONS[r].name,
-                },
-                [x, y, (side - 42.) / 2., 30.],
-                Act::Region(r),
-                self.journal.region == r,
-            );
-        }
-        let v = self.filtered();
-        self.label(
-            &format!("地域別年表  /  {}件", v.len()),
-            20.,
-            335.,
-            side - 40.,
-            28.,
-            Font::Big,
-            INK,
-        );
-        let end = h - 233.;
-        let rows = ((end - 375.) / 58.).max(1.) as usize;
-        self.list_offset = self.list_offset.min(v.len().saturating_sub(rows));
-        for (k, i) in v.iter().skip(self.list_offset).take(rows).enumerate() {
-            let e = &EVENTS[*i];
-            let y = 374. + k as f32 * 58.;
-            let active = *i == self.journal.selected;
-            if active {
-                self.gfx
-                    .fill_round(12., y - 3., side - 12., y + 50., 7., [0.88, 0.92, 0.85, 1.]);
-            }
-            self.gfx
-                .fill_circle(25., y + 14., 4., if self.found(*i) { GOLD } else { LINE });
-            self.label(
-                &year_text(e.year),
-                39.,
-                y,
-                side - 60.,
-                18.,
+        if !compact {
+            self.text(
+                "時空を渡り、歴史に出会う",
+                20.,
+                40.,
+                220.,
+                16.,
                 Font::Small,
-                if active { GREEN } else { MUTED },
-            );
-            self.label(
-                e.title,
-                39.,
-                y + 20.,
-                side - if self.found(*i) { 130. } else { 60. },
-                27.,
-                Font::Normal,
-                INK,
-            );
-            if let Some((_, _, bmp)) = self.thumbnails.iter().find(|(p, _, _)| p.event == *i) {
-                self.gfx
-                    .draw_bitmap(bmp, side - 76., y + 7., side - 20., y + 39.);
-            }
-            self.buttons.push(Button {
-                rect: [12., y - 3., side - 24., 53.],
-                act: Act::Select(*i),
-            });
-        }
-        if v.is_empty() {
-            self.label(
-                "該当する出来事がありません。\n検索語や地域を変えてください。",
-                24.,
-                385.,
-                side - 48.,
-                90.,
-                Font::Normal,
                 MUTED,
             );
         }
-        self.label(
-            "スクロールで年表をたどる",
-            22.,
-            h - 222.,
-            side - 44.,
-            23.,
-            Font::Small,
-            MUTED,
-        );
-        self.gfx
-            .fill_rect(16., h - 188., side - 16., h - 187., LINE);
-        self.label(
-            "あなたの歴史写真帳",
-            22.,
-            h - 171.,
-            side - 44.,
-            25.,
-            Font::Big,
-            GREEN,
-        );
-        let done = EVENTS
-            .iter()
-            .enumerate()
-            .filter(|(i, e)| {
-                (self.journal.region == 0 || e.region == self.journal.region) && self.found(*i)
-            })
-            .count();
-        let total = EVENTS
-            .iter()
-            .filter(|e| self.journal.region == 0 || e.region == self.journal.region)
-            .count();
-        self.label(
-            &format!(
-                "{} / {} 枚  ·  {}",
-                done, total, REGIONS[self.journal.region].name
+        let bh = if compact { 32. } else { 36. };
+        let by = (top - bh) / 2. - 1.;
+        let mut x = if compact { 200. } else { 270. };
+        let tabs = [
+            (
+                "世界地図",
+                Act::Atlas,
+                matches!(self.mode, Mode::Atlas | Mode::Shift),
             ),
-            22.,
-            h - 138.,
-            side - 44.,
-            29.,
-            Font::Normal,
-            MUTED,
-        );
-        self.gfx
-            .fill_round(22., h - 99., side - 22., h - 93., 3., LINE);
-        if total > 0 {
-            self.gfx.fill_round(
-                22.,
-                h - 99.,
-                22. + (side - 44.) * done as f32 / total as f32,
-                h - 93.,
-                3.,
-                GREEN,
+            ("図鑑", Act::Codex, self.mode == Mode::Codex),
+        ];
+        for (label, a, on) in tabs {
+            self.button(label, [x, by, 96., bh], a, on);
+            x += 104.;
+        }
+        if self.journal.visited.iter().any(|v| *v) && self.mode != Mode::Field {
+            let era = self.journal.era;
+            self.button(
+                &format!("{}へ戻る", ERAS[era].name),
+                [x, by, if compact { 170. } else { 210. }, bh],
+                Act::Shift(era, Some(self.journal.place)),
+                false,
             );
         }
-        self.button(
-            "写真を並べて見る",
-            [20., h - 72., side - 40., 38.],
-            Act::Mode(Mode::Album),
-            self.mode == Mode::Album,
+        let stat = format!(
+            "人物 {}/{}　出来事 {}/{}　秘宝 {}/{}",
+            self.met_count(None),
+            PEOPLE.len(),
+            self.seen_count(None),
+            EVENTS.len(),
+            self.treasure_count(),
+            ERAS.len()
         );
-        self.label(
-            "撮った写真は自動で保存されます",
-            22.,
-            h - 27.,
-            side - 44.,
+        let right = w - if compact { 200. } else { 330. };
+        self.text(&stat, right - 300., by + 8., 290., 22., Font::Normal, CYAN);
+        if compact {
+            self.button(
+                "使い方",
+                [w - 190., by, 84., bh],
+                Act::Help,
+                self.overlay == Overlay::Help,
+            );
+            self.button(
+                if self.voice { "声 ON" } else { "声 OFF" },
+                [w - 98., by, 84., bh],
+                Act::Voice,
+                self.voice,
+            );
+        } else {
+            self.button("書き出し", [w - 322., by, 76., bh], Act::Export, false);
+            self.button("読み込み", [w - 240., by, 76., bh], Act::Import, false);
+            self.button(
+                "使い方",
+                [w - 158., by, 70., bh],
+                Act::Help,
+                self.overlay == Overlay::Help,
+            );
+            self.button(
+                if self.voice { "声 ON" } else { "声 OFF" },
+                [w - 82., by, 66., bh],
+                Act::Voice,
+                self.voice,
+            );
+        }
+    }
+
+    // -------------------------------------------------------------- 世界地図
+    fn atlas_geometry(&mut self) {
+        let (s, cx, cy) = self.atlas_view();
+        let (x0, y0) = (cx - 180. * s, cy - 90. * s);
+        self.gfx.rect(
+            0.,
+            0.,
+            self.gfx.width as f32,
+            self.gfx.height as f32,
+            [0.06, 0.12, 0.20, 1.],
+        );
+        self.gfx.draw_textured(
+            &self.world,
+            x0,
+            y0,
+            x0 + 360. * s,
+            y0 + 180. * s,
+            [0.55, 0.68, 0.80, 1.],
+            true,
+        );
+        // 経緯線
+        let gc = [0.6, 0.8, 1.0, 0.10];
+        for k in -6..=6 {
+            let (x, _) = self.atlas_project(k as f32 * 30., 0.);
+            self.gfx.line((x, y0), (x, y0 + 180. * s), 1., gc);
+        }
+        for k in -2..=2 {
+            let (_, y) = self.atlas_project(0., k as f32 * 30.);
+            self.gfx.line((x0, y), (x0 + 360. * s, y), 1., gc);
+        }
+        // 行き先の光
+        let t = self.clock;
+        for (i, e) in ERAS.iter().enumerate() {
+            let (x, y) = self.atlas_project(e.lon, e.lat);
+            let sel = i == self.pick;
+            let r = if sel { 26. } else { 14. } + (t * 2.4 + i as f32).sin() * 2.;
+            self.gfx.radial(
+                x,
+                y,
+                r,
+                28,
+                alpha(era_color(i), if sel { 0.65 } else { 0.4 }),
+                [0.5, 0.8, 1., 0.],
+            );
+        }
+    }
+
+    fn atlas_ui(&mut self) {
+        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
+        let top = self.top();
+        let lw = self.atlas_list_w();
+        let compact = self.gfx.compact;
+        // 時代の一覧
+        self.gfx.fill_rect(0., top, lw, h, [0.07, 0.10, 0.18, 0.97]);
+        self.gfx.fill_rect(lw - 1., top, lw, h, EDGE);
+        self.text(
+            "転移先の時代",
+            20.,
+            top + 12.,
+            lw - 40.,
+            26.,
+            Font::Big,
+            GOLD,
+        );
+        self.text(
+            "時代と地域を選んでください",
+            20.,
+            top + 38.,
+            lw - 40.,
             18.,
             Font::Small,
             MUTED,
         );
-    }
-    fn map_geometry(&mut self) {
-        let [x, y, w, h] = self.area();
-        let scale = self.map_scale();
-        let px = x + w / 2. - (180. + self.center.0) * scale;
-        let py = y + (h - 170.) / 2. - (90. - self.center.1) * scale;
-        self.gfx.rect(x, y, x + w, y + h, [0.66, 0.81, 0.85, 1.]);
-        for k in if self.span >= 300. { 0..=0 } else { -1..=1 } {
-            let xx = px + k as f32 * 360. * scale;
-            self.gfx.draw_textured(
-                &self.world,
-                xx,
-                py,
-                xx + 360. * scale,
-                py + 180. * scale,
-                [1., 1., 1., 1.],
-                true,
-            );
-        }
-        if self.powers {
-            for p in POWERS
-                .iter()
-                .filter(|p| p.from <= self.journal.year && p.to >= self.journal.year)
-            {
-                let (cx, cy) = self.project(p.lon, p.lat);
-                let mut prev = None;
-                for n in 0..=64 {
-                    let a = n as f32 / 64. * std::f32::consts::TAU;
-                    let pt = (cx + a.cos() * p.rx * scale, cy + a.sin() * p.ry * scale);
-                    if let Some(last) = prev {
-                        self.gfx.tri((cx, cy), last, pt, p.color);
-                        self.gfx.line(
-                            last,
-                            pt,
-                            1.2,
-                            [
-                                p.color[0] * 0.65,
-                                p.color[1] * 0.65,
-                                p.color[2] * 0.65,
-                                0.65,
-                            ],
-                        );
-                    }
-                    prev = Some(pt);
-                }
-            }
-        }
-    }
-    fn map_ui(&mut self) {
-        let [x, y, w, h] = self.area();
-        let right = x + w;
-        let bottom = y + h;
-        // Keep map drawing within its panel, including during deep zoom.
-        self.gfx
-            .fill_round(x + 20., y + 18., x + 258., y + 68., 9., WHITE);
-        self.label(
-            &year_text(self.journal.year),
-            x + 35.,
-            y + 26.,
-            215.,
-            30.,
-            Font::Big,
-            GREEN,
-        );
-        self.button(
-            "世界に戻る",
-            [right - 146., y + 18., 126., 34.],
-            Act::World,
-            false,
-        );
-        self.button(
-            if self.powers {
-                "勢力 ON"
-            } else {
-                "勢力 OFF"
-            },
-            [right - 146., y + 60., 126., 34.],
-            Act::Powers,
-            self.powers,
-        );
-        let year = self.journal.year;
-        if self.powers {
-            for p in POWERS.iter().filter(|p| p.from <= year && p.to >= year) {
-                let (px, py) = self.project(p.lon, p.lat);
-                if px > x + 60. && px < right - 70. && py > y + 12. && py < bottom - 170. {
-                    self.label(
-                        p.name,
-                        px - 85.,
-                        py - 13.,
-                        170.,
-                        24.,
-                        Font::NormalCenter,
-                        GREEN,
-                    );
-                }
-            }
-        }
-        let v = self.filtered();
-        let mut positions: Vec<(f32, f32)> = vec![];
-        // Selected marker goes last. Nearby markers use small deterministic offsets.
-        let mut order: Vec<usize> = v
-            .iter()
-            .copied()
-            .filter(|i| *i != self.journal.selected)
-            .collect();
-        if v.contains(&self.journal.selected) {
-            order.push(self.journal.selected);
-        }
-        for i in order {
-            let e = &EVENTS[i];
-            let (px, mut py) = self.project(e.lon, e.lat);
-            if px < x + 18. || px > right - 18. || py < y + 12. || py > bottom - 165. {
+        let list_y = top + 64.;
+        let row = if compact { 62. } else { 72. };
+        let view = [0., list_y, lw, h - list_y];
+        self.scroll_areas.push((view, Scroll::Atlas));
+        self.scroll_max[Scroll::Atlas as usize] = ERAS.len() as f32 * row + 12. - view[3];
+        let off = self.scroll[Scroll::Atlas as usize];
+        self.gfx.clip_begin(0., list_y, lw, h);
+        for (i, e) in ERAS.iter().enumerate() {
+            let y = list_y + i as f32 * row - off;
+            if y + row < list_y || y > h {
                 continue;
             }
-            let active = i == self.journal.selected;
-            if !active {
-                while positions
-                    .iter()
-                    .any(|(a, b)| (a - px).abs() < 19. && (b - py).abs() < 20.)
-                {
-                    py += 21.;
-                }
+            let sel = i == self.pick;
+            let r = [12., y + 4., lw - 24., row - 8.];
+            self.gfx.fill_round(
+                r[0],
+                r[1],
+                r[0] + r[2],
+                r[1] + r[3],
+                8.,
+                if sel {
+                    [0.18, 0.25, 0.40, 1.]
+                } else {
+                    [0.11, 0.16, 0.26, 1.]
+                },
+            );
+            self.gfx.stroke_round(
+                r[0],
+                r[1],
+                r[0] + r[2],
+                r[1] + r[3],
+                8.,
+                1.,
+                if sel { GOLD } else { alpha(EDGE, 0.6) },
+            );
+            self.gfx.fill_rect(
+                r[0] + 1.,
+                r[1] + 8.,
+                r[0] + 5.,
+                r[1] + r[3] - 8.,
+                era_color(i),
+            );
+            self.text(
+                e.years,
+                26.,
+                y + 9.,
+                lw - 120.,
+                18.,
+                Font::Small,
+                if sel { GOLD } else { MUTED },
+            );
+            self.text(e.name, 26., y + 26., lw - 110., 24., Font::Big, TEXT);
+            if !compact {
+                self.text(e.area, 26., y + 50., lw - 60., 16., Font::Small, MUTED);
             }
-            positions.push((px, py));
-            let near = (e.year - self.journal.year).abs() < 100;
-            let c = if active {
-                GOLD
-            } else if self.found(i) {
-                GREEN
-            } else if near {
-                [0.35, 0.47, 0.40, 1.]
+            let done = self.met_count(Some(i)) + self.seen_count(Some(i));
+            let all = PEOPLE.iter().filter(|p| p.era == i).count()
+                + EVENTS.iter().filter(|x| x.era == i).count();
+            let pct = if self.journal.treasures[i] {
+                "◆秘宝".to_string()
             } else {
-                [0.57, 0.63, 0.57, 0.85]
+                format!("{}%", done * 100 / all.max(1))
             };
-            self.gfx
-                .fill_circle(px, py, if active { 11. } else { 7. }, WHITE);
-            self.gfx
-                .fill_circle(px, py, if active { 8. } else { 5. }, c);
+            self.text(
+                &pct,
+                lw - 86.,
+                y + 26.,
+                56.,
+                24.,
+                Font::NormalCenter,
+                if done == all { GOLD } else { CYAN },
+            );
             self.buttons.push(Button {
-                rect: [px - 11., py - 11., 22., 22.],
-                act: Act::Select(i),
+                rect: r,
+                act: Act::PickEra(i),
             });
-            if active {
-                self.gfx
-                    .fill_round(px + 14., py - 16., px + 199., py + 34., 6., WHITE);
-                self.label(e.title, px + 23., py - 10., 168., 23., Font::Normal, INK);
-                self.label(e.place, px + 23., py + 13., 168., 18., Font::Small, MUTED);
-            }
         }
-        self.button(
-            "＋",
-            [right - 62., bottom - 270., 42., 42.],
-            Act::Zoom(0.75),
-            false,
+        self.gfx.clip_end();
+
+        // 地図の上の名札
+        for (i, e) in ERAS.iter().enumerate() {
+            let (x, y) = self.atlas_project(e.lon, e.lat);
+            let sel = i == self.pick;
+            let (tx, ty) = (x + e.tag.0, y + e.tag.1);
+            let tw = 136.;
+            self.gfx.fill_circle(
+                x,
+                y,
+                if sel { 6. } else { 4.5 },
+                if sel { GOLD } else { TEXT },
+            );
+            self.gfx
+                .stroke_circle(x, y, 9., 1.5, alpha(era_color(i), 0.9));
+            let r = [tx, ty, tw, 28.];
+            self.gfx.fill_round(
+                r[0],
+                r[1],
+                r[0] + tw,
+                r[1] + 28.,
+                6.,
+                if sel {
+                    [0.18, 0.25, 0.40, 0.96]
+                } else {
+                    [0.08, 0.12, 0.20, 0.88]
+                },
+            );
+            self.gfx.stroke_round(
+                r[0],
+                r[1],
+                r[0] + tw,
+                r[1] + 28.,
+                6.,
+                1.,
+                if sel { GOLD } else { alpha(era_color(i), 0.8) },
+            );
+            self.text(
+                e.name,
+                tx + 4.,
+                ty + 3.,
+                tw - 8.,
+                22.,
+                Font::NormalCenter,
+                TEXT,
+            );
+            self.buttons.push(Button {
+                rect: r,
+                act: Act::PickEra(i),
+            });
+            self.buttons.push(Button {
+                rect: [x - 12., y - 12., 24., 24.],
+                act: Act::PickEra(i),
+            });
+        }
+
+        // 選んだ時代の札
+        let e = &ERAS[self.pick];
+        let card = if compact { 150. } else { 176. };
+        let (x0, y0, x1, y1) = (lw + 16., h - card + 4., w - 16., h - 12.);
+        self.panel_box(x0, y0, x1, y1);
+        // 時代の扉絵があれば左に
+        let art = self.gfx.image(&images::era_art(self.pick));
+        let aw = if art.is_some() {
+            (y1 - y0 - 20.) * 16. / 9.
+        } else {
+            0.
+        };
+        if let Some(img) = art {
+            self.gfx
+                .draw_image(&img, x0 + 10., y0 + 10., x0 + 10. + aw, y1 - 10., 1.);
+            self.gfx.stroke_rect(
+                x0 + 10.,
+                y0 + 10.,
+                x0 + 10. + aw,
+                y1 - 10.,
+                1.,
+                alpha(GOLD, 0.6),
+            );
+            image_tag(&mut self.gfx, x0 + 10. + aw, y1 - 10.);
+        }
+        let tx0 = x0 + 20. + if aw > 0. { aw + 6. } else { 0. };
+        self.text(
+            &format!("{}　／　{}", e.years, e.area),
+            tx0,
+            y0 + 12.,
+            x1 - tx0 - 240.,
+            18.,
+            Font::Small,
+            GOLD,
         );
-        self.button(
-            "−",
-            [right - 62., bottom - 221., 42., 42.],
-            Act::Zoom(1.333),
-            false,
+        self.text(
+            &format!("{} ― {}", e.name, e.period),
+            tx0,
+            y0 + 32.,
+            x1 - tx0 - 240.,
+            26.,
+            Font::Big,
+            TEXT,
         );
-        let scale_km = 111. * 100. / self.map_scale();
-        self.label(
-            &format!("約 {:0.0} km  ━━━", scale_km),
-            x + 24.,
-            bottom - 185.,
+        self.gfx.clip_begin(tx0, y0 + 60., x1 - 240., y1 - 8.);
+        self.text(
+            e.intro,
+            tx0,
+            y0 + 62.,
+            x1 - tx0 - 240.,
+            y1 - y0 - 66.,
+            Font::Normal,
+            MUTED,
+        );
+        self.gfx.clip_end();
+        let pc = PEOPLE.iter().filter(|p| p.era == self.pick).count();
+        let ec = EVENTS.iter().filter(|x| x.era == self.pick).count();
+        self.text(
+            &format!(
+                "人物 {}/{}　出来事 {}/{}",
+                self.met_count(Some(self.pick)),
+                pc,
+                self.seen_count(Some(self.pick)),
+                ec
+            ),
+            x1 - 230.,
+            y0 + 18.,
             210.,
-            23.,
-            Font::Small,
-            MUTED,
+            20.,
+            Font::NormalCenter,
+            CYAN,
         );
-        self.event_card(x + 20., bottom - 157., w - 40.);
-        self.label("Natural Earth · 正距円筒図法 / 勢力の楕円は交流・影響圏の概略（領土境界ではありません）",x+20.,bottom-22.,w-40.,18.,Font::Small,MUTED);
-    }
-    fn event_card(&mut self, x: f32, y: f32, w: f32) {
-        let e = &EVENTS[self.journal.selected];
-        self.gfx.fill_round(x, y, x + w, y + 126., 10., WHITE);
-        self.label(
-            &format!("{}  /  {}  /  {}", year_text(e.year), e.place, e.category),
-            x + 18.,
-            y + 10.,
-            w - 230.,
-            21.,
-            Font::Small,
-            MUTED,
-        );
-        self.label(e.title, x + 18., y + 35., w - 230., 28., Font::Big, INK);
-        self.label(e.body, x + 18., y + 70., w - 245., 48., Font::Normal, MUTED);
         self.button(
-            "上空へ  →",
-            [x + w - 185., y + 27., 165., 44.],
-            Act::Visit,
+            "転移する",
+            [x1 - 220., y0 + 50., 200., 48.],
+            Act::Shift(self.pick, None),
             true,
         );
-        self.label(
-            if self.found(self.journal.selected) {
-                "● 撮影済み"
+        if !compact {
+            self.text(
+                "Enter でも転移できます",
+                x1 - 230.,
+                y0 + 108.,
+                210.,
+                18.,
+                Font::Small,
+                MUTED,
+            );
+        }
+    }
+
+    fn shift_ui(&mut self) {
+        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
+        let t = (self.shift_t / 1.6).clamp(0., 1.);
+        let fade = if t < 0.15 {
+            t / 0.15
+        } else if t > 0.85 {
+            (1. - t) / 0.15
+        } else {
+            1.
+        };
+        self.gfx
+            .fill_rect(0., 0., w, h, [0.02, 0.04, 0.09, 0.92 * fade]);
+        if let Some(img) = self.gfx.image(&images::era_art(self.shift_to.0)) {
+            // 転移先の景色が、だんだん浮かび上がる
+            cover(
+                &mut self.gfx,
+                &img,
+                [0., 0., w, h],
+                16. / 9.,
+                0.75 * fade * t.powf(0.7),
+            );
+        }
+        let (cx, cy) = (w / 2., h / 2.);
+        for k in 0..7 {
+            let p = ((t * 1.8 + k as f32 / 7.) % 1.).powf(1.4);
+            let r = 20. + p * w.max(h) * 0.6;
+            self.gfx.stroke_circle(
+                cx,
+                cy,
+                r,
+                2. + 3. * (1. - p),
+                alpha(mix(CYAN, GOLD, k as f32 / 7.), (1. - p) * fade),
+            );
+        }
+        let (era, _) = self.shift_to;
+        let e = &ERAS[era];
+        self.text(
+            "時 空 転 移",
+            cx - 300.,
+            cy - 92.,
+            600.,
+            40.,
+            Font::Title,
+            alpha(CYAN, fade),
+        );
+        self.text(
+            e.years,
+            cx - 300.,
+            cy - 30.,
+            600.,
+            30.,
+            Font::BigCenter,
+            alpha(GOLD, fade),
+        );
+        self.text(
+            &format!("{} ― {}", e.name, e.area),
+            cx - 300.,
+            cy + 6.,
+            600.,
+            30.,
+            Font::BigCenter,
+            alpha(TEXT, fade),
+        );
+        let n = (t * 24.) as usize;
+        self.text(
+            &format!("座標固定中{}", "・".repeat(n % 4)),
+            cx - 300.,
+            cy + 56.,
+            600.,
+            22.,
+            Font::NormalCenter,
+            alpha(MUTED, fade),
+        );
+    }
+
+    // -------------------------------------------------------------- ミニマップ
+    fn field_geometry(&mut self) {
+        let r = self.map_rect();
+        let era = &ERAS[self.journal.era];
+        let tint = era.tint;
+        let m = |x: f32, y: f32| (r[0] + x * r[2], r[1] + y * r[3]);
+        let has_map = self.gfx.image(&images::map(self.journal.era)).is_some();
+        let g = &mut self.gfx;
+        // 額縁と紙
+        g.rect(
+            r[0] - 8.,
+            r[1] - 8.,
+            r[0] + r[2] + 8.,
+            r[1] + r[3] + 8.,
+            [0.35, 0.27, 0.16, 1.],
+        );
+        g.rect(
+            r[0] - 4.,
+            r[1] - 4.,
+            r[0] + r[2] + 4.,
+            r[1] + r[3] + 4.,
+            GOLD,
+        );
+        if has_map {
+            // 絵地図は文字・UI の層に描く（field_ui）
+            return;
+        }
+        g.rect_vgrad(
+            r[0],
+            r[1],
+            r[0] + r[2],
+            r[1] + r[3],
+            tint,
+            mix(tint, [0.70, 0.60, 0.45, 1.], 0.25),
+        );
+        // 紙のしみ
+        for k in 0..9 {
+            let fx = ((k as f32 * 0.618 + 0.13) % 1.) * 0.9 + 0.05;
+            let fy = ((k as f32 * 0.414 + 0.37) % 1.) * 0.9 + 0.05;
+            let (x, y) = m(fx, fy);
+            g.radial(
+                x,
+                y,
+                r[2] * 0.12,
+                20,
+                [0.55, 0.42, 0.25, 0.07],
+                [0.55, 0.42, 0.25, 0.],
+            );
+        }
+        let ink = [0.42, 0.32, 0.20, 0.55];
+        for f in era.features {
+            match f {
+                Feature::Water(pts) => fill_poly(g, pts, &m, WATER),
+                Feature::Land(pts) => fill_poly(g, pts, &m, mix(tint, [0.75, 0.68, 0.5, 1.], 0.15)),
+                Feature::River(pts, wd) => {
+                    let wd = wd * r[3];
+                    for s in pts.windows(2) {
+                        g.line(m(s[0].0, s[0].1), m(s[1].0, s[1].1), wd, WATER);
+                    }
+                    for p in pts.iter() {
+                        let (x, y) = m(p.0, p.1);
+                        g.circle(x, y, wd / 2., 12, WATER);
+                    }
+                }
+                Feature::Hill(x, y, rad) => {
+                    let (x, y) = m(*x, *y);
+                    let rr = rad * r[3];
+                    g.radial(
+                        x,
+                        y,
+                        rr,
+                        24,
+                        [0.55, 0.45, 0.28, 0.45],
+                        [0.55, 0.45, 0.28, 0.],
+                    );
+                    for k in 0..3 {
+                        let ox = (k as f32 - 1.) * rr * 0.35;
+                        let pk = (x + ox, y - rr * 0.32);
+                        g.line((pk.0 - rr * 0.18, pk.1 + rr * 0.16), pk, 1.4, ink);
+                        g.line(pk, (pk.0 + rr * 0.18, pk.1 + rr * 0.16), 1.4, ink);
+                    }
+                }
+                Feature::Wall(pts) => {
+                    for k in 0..pts.len() {
+                        let a = pts[k];
+                        let b = pts[(k + 1) % pts.len()];
+                        g.line(m(a.0, a.1), m(b.0, b.1), 2.6, [0.40, 0.30, 0.18, 0.75]);
+                    }
+                }
+                Feature::Grid(x0, y0, x1, y1, nx, ny) => {
+                    let c = [0.45, 0.36, 0.24, 0.22];
+                    for k in 1..*nx {
+                        let x = x0 + (x1 - x0) * k as f32 / *nx as f32;
+                        g.line(m(x, *y0), m(x, *y1), 1., c);
+                    }
+                    for k in 1..*ny {
+                        let y = y0 + (y1 - y0) * k as f32 / *ny as f32;
+                        g.line(m(*x0, y), m(*x1, y), 1., c);
+                    }
+                }
+                Feature::Road(pts) => {
+                    for s in pts.windows(2) {
+                        g.line(
+                            m(s[0].0, s[0].1),
+                            m(s[1].0, s[1].1),
+                            3.,
+                            [0.62, 0.52, 0.36, 0.7],
+                        );
+                    }
+                }
+                Feature::Label(..) => (),
+            }
+        }
+        // 道（点線）
+        for &(a, b) in era.roads {
+            let pa = m(era.places[a].x, era.places[a].y);
+            let pb = m(era.places[b].x, era.places[b].y);
+            let len = ((pb.0 - pa.0).powi(2) + (pb.1 - pa.1).powi(2)).sqrt();
+            let n = (len / 10.).max(1.) as usize;
+            for k in (0..n).step_by(2) {
+                let t0 = k as f32 / n as f32;
+                let t1 = ((k + 1) as f32 / n as f32).min(1.);
+                g.line(
+                    (pa.0 + (pb.0 - pa.0) * t0, pa.1 + (pb.1 - pa.1) * t0),
+                    (pa.0 + (pb.0 - pa.0) * t1, pa.1 + (pb.1 - pa.1) * t1),
+                    2.4,
+                    [0.48, 0.30, 0.16, 0.8],
+                );
+            }
+        }
+        // 方位
+        let (cx, cy) = (r[0] + r[2] - 34., r[1] + 38.);
+        g.tri(
+            (cx, cy - 22.),
+            (cx - 6., cy),
+            (cx + 6., cy),
+            [0.55, 0.20, 0.15, 0.9],
+        );
+        g.tri(
+            (cx, cy + 22.),
+            (cx - 6., cy),
+            (cx + 6., cy),
+            [0.40, 0.32, 0.22, 0.7],
+        );
+        g.ring(cx, cy, 14., 1.2, 24, [0.40, 0.32, 0.22, 0.6]);
+        // 場所の図柄
+        for (i, p) in era.places.iter().enumerate() {
+            let (x, y) = m(p.x, p.y);
+            let here = i == self.journal.place && self.travel.is_none();
+            if here {
+                let pulse = 0.5 + 0.5 * (self.clock * 3.).sin();
+                g.radial(
+                    x,
+                    y,
+                    34. + pulse * 6.,
+                    30,
+                    [1., 0.85, 0.45, 0.45],
+                    [1., 0.85, 0.45, 0.],
+                );
+            }
+            g.circle(x + 2., y + 3., 19., 24, [0.2, 0.12, 0.05, 0.25]);
+            g.circle(x, y, 19., 24, [0.97, 0.93, 0.83, 1.]);
+            g.ring(
+                x,
+                y,
+                19.,
+                2.2,
+                24,
+                if here {
+                    [0.80, 0.55, 0.15, 1.]
+                } else {
+                    [0.42, 0.30, 0.18, 1.]
+                },
+            );
+            icon(g, p.kind, x, y, 11.);
+        }
+        // 自分
+        let (ax, ay) = m(self.avatar.0, self.avatar.1);
+        let bob = (self.clock * 5.).sin() * 2.;
+        let (ax, ay) = (ax + 14., ay - 26. + bob);
+        g.circle(ax, ay + 24. - bob, 7., 16, [0., 0., 0., 0.25]);
+        g.tri(
+            (ax, ay + 20.),
+            (ax - 9., ay + 4.),
+            (ax + 9., ay + 4.),
+            [0.15, 0.55, 0.75, 1.],
+        );
+        g.circle(ax, ay, 9., 20, [0.15, 0.55, 0.75, 1.]);
+        g.circle(ax, ay, 6., 20, [0.85, 0.97, 1., 1.]);
+    }
+
+    fn field_ui(&mut self) {
+        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
+        let top = self.top();
+        let r = self.map_rect();
+        let ei = self.journal.era;
+        let era = &ERAS[ei];
+        let compact = self.gfx.compact;
+        // 絵地図があれば、それを敷いて印を重ねる
+        let map_img = self.gfx.image(&images::map(ei));
+        if let Some(img) = &map_img {
+            self.gfx
+                .draw_image(img, r[0], r[1], r[0] + r[2], r[1] + r[3], 1.);
+            image_tag(&mut self.gfx, r[0] + r[2], r[1] + r[3]);
+            for (i, p) in era.places.iter().enumerate() {
+                let (x, y) = (r[0] + p.x * r[2], r[1] + p.y * r[3]);
+                let here = i == self.journal.place && self.travel.is_none();
+                if here {
+                    let pulse = 0.5 + 0.5 * (self.clock * 3.).sin();
+                    self.gfx
+                        .fill_circle(x, y, 26. + pulse * 6., [1., 0.85, 0.45, 0.30]);
+                }
+                self.gfx
+                    .stroke_circle(x, y, 16., 3., [0.2, 0.12, 0.05, 0.6]);
+                self.gfx.stroke_circle(
+                    x,
+                    y,
+                    16.,
+                    2.,
+                    if here {
+                        [1., 0.78, 0.3, 1.]
+                    } else {
+                        [0.98, 0.94, 0.84, 0.95]
+                    },
+                );
+            }
+            let (ax, ay) = (
+                r[0] + self.avatar.0 * r[2] + 14.,
+                r[1] + self.avatar.1 * r[3] - 26. + (self.clock * 5.).sin() * 2.,
+            );
+            self.gfx
+                .fill_circle(ax, ay + 10., 8., [0.15, 0.55, 0.75, 1.]);
+            self.gfx.fill_circle(ax, ay, 9., [0.15, 0.55, 0.75, 1.]);
+            self.gfx.fill_circle(ax, ay, 6., [0.85, 0.97, 1., 1.]);
+        }
+        // 地名の注記
+        for f in era.features.iter().filter(|_| map_img.is_none()) {
+            if let Feature::Label(s, x, y) = f {
+                let (x, y) = (r[0] + x * r[2], r[1] + y * r[3]);
+                self.text(
+                    s,
+                    x - 110.,
+                    y - 9.,
+                    220.,
+                    18.,
+                    Font::NormalCenter,
+                    [0.38, 0.27, 0.16, 0.85],
+                );
+            }
+        }
+        // 場所の名前と印
+        for (i, p) in era.places.iter().enumerate() {
+            let (x, y) = (r[0] + p.x * r[2], r[1] + p.y * r[3]);
+            let here = i == self.journal.place && self.travel.is_none();
+            let tw = self.gfx.measure(p.name, Font::Small).min(190.) + 14.;
+            let ly = if p.y > 0.86 { y - 44. } else { y + 22. };
+            self.gfx.fill_round(
+                x - tw / 2.,
+                ly,
+                x + tw / 2.,
+                ly + 19.,
+                4.,
+                if here {
+                    [0.42, 0.22, 0.08, 0.92]
+                } else {
+                    [0.20, 0.14, 0.08, 0.80]
+                },
+            );
+            self.text(
+                p.name,
+                x - tw / 2. + 4.,
+                ly + 1.,
+                tw - 8.,
+                17.,
+                Font::Small,
+                [1., 0.96, 0.88, 1.],
+            );
+            // 未発見の人物・出来事の印
+            let unmet = PEOPLE
+                .iter()
+                .enumerate()
+                .filter(|(k, q)| q.era == ei && q.place == p.id && !self.journal.met[*k])
+                .count();
+            let unseen = EVENTS
+                .iter()
+                .enumerate()
+                .filter(|(k, q)| q.era == ei && q.place == p.id && !self.journal.seen[*k])
+                .count();
+            let mut bx = x + 14.;
+            if unmet > 0 {
+                self.gfx
+                    .fill_circle(bx, y - 16., 9., [0.20, 0.50, 0.75, 1.]);
+                self.gfx.stroke_circle(bx, y - 16., 9., 1.5, TEXT);
+                self.text("人", bx - 9., y - 25., 18., 18., Font::NormalCenter, TEXT);
+                bx += 19.;
+            }
+            if unseen > 0 {
+                let b = 1. + 0.12 * (self.clock * 4. + i as f32).sin();
+                self.gfx
+                    .fill_circle(bx, y - 16., 9. * b, [0.82, 0.35, 0.22, 1.]);
+                self.gfx.stroke_circle(bx, y - 16., 9. * b, 1.5, TEXT);
+                self.text("！", bx - 9., y - 25., 18., 18., Font::NormalCenter, TEXT);
+            }
+            self.buttons.push(Button {
+                rect: [x - 22., y - 22., 44., 44.],
+                act: Act::Goto(i),
+            });
+        }
+        self.text(
+            era.map_note,
+            r[0],
+            r[1] + r[3] + 12.,
+            r[2],
+            18.,
+            Font::Small,
+            MUTED,
+        );
+
+        // 右の情報欄
+        let pw = self.panel_w();
+        let x0 = w - pw - 8.;
+        let (y0, y1) = (top + 10., h - 10.);
+        self.panel_box(x0, y0, w - 8., y1);
+        let iw = pw - 36.;
+        let ix = x0 + 18.;
+        self.text(
+            &format!("{}　{}", era.years, era.period),
+            ix,
+            y0 + 12.,
+            iw,
+            18.,
+            Font::Small,
+            GOLD,
+        );
+        self.text(era.name, ix, y0 + 30., iw, 26., Font::Big, TEXT);
+        let pc = PEOPLE.iter().filter(|p| p.era == ei).count();
+        let ec = EVENTS.iter().filter(|x| x.era == ei).count();
+        self.text(
+            &format!(
+                "人物 {}/{}　出来事 {}/{}",
+                self.met_count(Some(ei)),
+                pc,
+                self.seen_count(Some(ei)),
+                ec
+            ),
+            ix,
+            y0 + 56.,
+            iw,
+            18.,
+            Font::Small,
+            CYAN,
+        );
+        self.gfx
+            .fill_rect(ix, y0 + 80., ix + iw, y0 + 81., alpha(EDGE, 0.8));
+        let foot = if compact { 52. } else { 60. };
+        let cy0 = y0 + 88.;
+        let cy1 = y1 - foot;
+        self.scroll_areas
+            .push(([x0, cy0, pw, cy1 - cy0], Scroll::Panel));
+        let off = self.scroll[Scroll::Panel as usize];
+        self.gfx.clip_begin(x0, cy0, w - 8., cy1);
+        let mut y = cy0 + 6. - off;
+        if let Some(tr) = &self.travel {
+            let dest = era.places[tr.target].name;
+            self.text("移動中…", ix, y, iw, 24., Font::Big, CYAN);
+            self.text(
+                &format!("行き先：{}", dest),
+                ix,
+                y + 28.,
+                iw,
+                20.,
+                Font::Normal,
+                TEXT,
+            );
+            y += 60.;
+        } else {
+            if self.era_complete(ei) {
+                let got = self.journal.treasures[ei];
+                let rr = [ix, y, iw, 58.];
+                let glow = 0.5 + 0.5 * (self.clock * 2.5).sin();
+                self.gfx.fill_round(
+                    rr[0],
+                    rr[1],
+                    rr[0] + iw,
+                    rr[1] + 58.,
+                    8.,
+                    mix(
+                        [0.10, 0.22, 0.32, 1.],
+                        [0.16, 0.34, 0.44, 1.],
+                        if got { 0. } else { glow },
+                    ),
+                );
+                self.gfx.stroke_round(
+                    rr[0],
+                    rr[1],
+                    rr[0] + iw,
+                    rr[1] + 58.,
+                    8.,
+                    1.5,
+                    if got { GOLD } else { CYAN },
+                );
+                if got {
+                    self.text(
+                        "◆ この時代の秘宝",
+                        ix + 12.,
+                        y + 6.,
+                        iw - 24.,
+                        18.,
+                        Font::Small,
+                        GOLD,
+                    );
+                    self.text(
+                        treasure(ei).name,
+                        ix + 12.,
+                        y + 26.,
+                        iw - 24.,
+                        24.,
+                        Font::Big,
+                        TEXT,
+                    );
+                    self.buttons.push(Button {
+                        rect: rr,
+                        act: Act::Treasure(ei),
+                    });
+                } else {
+                    self.text(
+                        "記録がすべてそろった",
+                        ix + 12.,
+                        y + 6.,
+                        iw - 24.,
+                        18.,
+                        Font::Small,
+                        CYAN,
+                    );
+                    self.text(
+                        "アカシックレコードの試練に挑む",
+                        ix + 12.,
+                        y + 26.,
+                        iw - 24.,
+                        24.,
+                        Font::Big,
+                        TEXT,
+                    );
+                    self.buttons.push(Button {
+                        rect: rr,
+                        act: Act::TrialIntro(ei),
+                    });
+                }
+                y += 70.;
+            }
+            let p = &era.places[self.journal.place];
+            self.text("現在地", ix, y, iw, 16., Font::Small, MUTED);
+            self.text(p.name, ix, y + 16., iw, 26., Font::Big, GOLD);
+            let dh = self.gfx.measure_h(p.desc, Font::Normal, iw);
+            self.text(p.desc, ix, y + 46., iw, dh, Font::Normal, MUTED);
+            y += 54. + dh;
+            let people = self.people_here();
+            self.text("この場所にいる人物", ix, y, iw, 20., Font::Normal, TEXT);
+            y += 24.;
+            if people.is_empty() {
+                self.text("（いまは誰もいない）", ix, y, iw, 20., Font::Small, MUTED);
+                y += 24.;
+            }
+            for i in people {
+                let p = &PEOPLE[i];
+                let rr = [ix, y, iw, 50.];
+                let hover = inside(rr, self.mouse.0, self.mouse.1);
+                self.gfx.fill_round(
+                    ix,
+                    y,
+                    ix + iw,
+                    y + 50.,
+                    7.,
+                    if hover {
+                        [0.20, 0.28, 0.43, 1.]
+                    } else {
+                        PANEL2
+                    },
+                );
+                self.medallion(p.name, ix + 25., y + 25., 18., era_color(ei), true);
+                self.text(p.name, ix + 50., y + 6., iw - 110., 20., Font::Normal, TEXT);
+                self.text(
+                    p.role,
+                    ix + 50.,
+                    y + 27.,
+                    iw - 110.,
+                    17.,
+                    Font::Small,
+                    MUTED,
+                );
+                self.text(
+                    if self.journal.met[i] {
+                        "再会"
+                    } else {
+                        "会う"
+                    },
+                    ix + iw - 58.,
+                    y + 13.,
+                    50.,
+                    24.,
+                    Font::NormalCenter,
+                    if self.journal.met[i] { CYAN } else { GOLD },
+                );
+                self.buttons.push(Button {
+                    rect: rr,
+                    act: Act::Meet(i),
+                });
+                y += 56.;
+            }
+            y += 8.;
+            let events = self.events_here();
+            self.text("ここで起きた出来事", ix, y, iw, 20., Font::Normal, TEXT);
+            y += 24.;
+            if events.is_empty() {
+                self.text(
+                    "（この場所の出来事は収録していません）",
+                    ix,
+                    y,
+                    iw,
+                    20.,
+                    Font::Small,
+                    MUTED,
+                );
+                y += 24.;
+            }
+            for i in events {
+                let e = &EVENTS[i];
+                let rr = [ix, y, iw, 46.];
+                let hover = inside(rr, self.mouse.0, self.mouse.1);
+                self.gfx.fill_round(
+                    ix,
+                    y,
+                    ix + iw,
+                    y + 46.,
+                    7.,
+                    if hover {
+                        [0.20, 0.28, 0.43, 1.]
+                    } else {
+                        PANEL2
+                    },
+                );
+                self.gfx.fill_rect(
+                    ix + 1.,
+                    y + 6.,
+                    ix + 4.,
+                    y + 40.,
+                    if self.journal.seen[i] {
+                        CYAN
+                    } else {
+                        [0.82, 0.35, 0.22, 1.]
+                    },
+                );
+                self.text(e.date, ix + 12., y + 4., iw - 80., 17., Font::Small, GOLD);
+                self.text(
+                    e.title,
+                    ix + 12.,
+                    y + 22.,
+                    iw - 80.,
+                    20.,
+                    Font::Normal,
+                    TEXT,
+                );
+                self.text(
+                    if self.journal.seen[i] {
+                        "記録済"
+                    } else {
+                        "観察"
+                    },
+                    ix + iw - 62.,
+                    y + 11.,
+                    56.,
+                    24.,
+                    Font::NormalCenter,
+                    if self.journal.seen[i] { CYAN } else { GOLD },
+                );
+                self.buttons.push(Button {
+                    rect: rr,
+                    act: Act::Observe(i),
+                });
+                y += 52.;
+            }
+        }
+        let content = y + off - cy0;
+        self.scroll_max[Scroll::Panel as usize] = content - (cy1 - cy0);
+        self.gfx.clip_end();
+        let bw = (iw - 10.) / 2.;
+        self.button(
+            "図鑑を開く",
+            [ix, y1 - foot + 10., bw, foot - 22.],
+            Act::Codex,
+            false,
+        );
+        self.button(
+            "時代を選び直す",
+            [ix + bw + 10., y1 - foot + 10., bw, foot - 22.],
+            Act::Atlas,
+            false,
+        );
+        // 手前の案内
+        if !compact {
+            self.text(
+                "場所を押すと道をたどって移動します（矢印キーでも移動）",
+                r[0],
+                top + 14. - 12.,
+                r[2],
+                0.,
+                Font::Small,
+                MUTED,
+            );
+        }
+    }
+
+    // -------------------------------------------------------------- 会話・観察
+    fn card(&mut self, cw: f32, ch: f32) -> [f32; 4] {
+        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
+        self.gfx.fill_rect(0., 0., w, h, [0.01, 0.02, 0.05, 0.72]);
+        let cw = cw.min(w - 32.);
+        let ch = ch.min(h - 24.);
+        let x = (w - cw) / 2.;
+        let y = (h - ch) / 2.;
+        self.panel_box(x, y, x + cw, y + ch);
+        [x, y, cw, ch]
+    }
+
+    fn meet_ui(&mut self, i: usize, page: usize) {
+        let p = &PEOPLE[i];
+        let compact = self.gfx.compact;
+        let [x, y, cw, ch] = self.card(860., if compact { 420. } else { 470. });
+        let mr = if compact { 44. } else { 58. };
+        self.medallion(
+            p.name,
+            x + 30. + mr,
+            y + 30. + mr,
+            mr,
+            era_color(p.era),
+            true,
+        );
+        let tx = x + 60. + mr * 2.;
+        let tw = cw - (tx - x) - 24.;
+        self.text(
+            &format!("{}　／　{}", ERAS[p.era].name, p.life),
+            tx,
+            y + 24.,
+            tw,
+            18.,
+            Font::Small,
+            GOLD,
+        );
+        self.text(p.name, tx, y + 44., tw, 28., Font::Big, TEXT);
+        self.text(p.native, tx, y + 74., tw, 18., Font::Small, MUTED);
+        self.text(p.role, tx, y + 96., tw, 20., Font::Normal, CYAN);
+        // 言葉
+        let by = y + if compact { 150. } else { 170. };
+        let bh = ch - (by - y) - 96.;
+        self.gfx.fill_round(
+            x + 24.,
+            by,
+            x + cw - 24.,
+            by + bh,
+            8.,
+            [0.05, 0.08, 0.14, 0.95],
+        );
+        self.gfx
+            .stroke_round(x + 24., by, x + cw - 24., by + bh, 8., 1., alpha(GOLD, 0.6));
+        let line = p.lines[page.min(p.lines.len() - 1)];
+        self.text(line, x + 46., by + 18., cw - 92., bh - 30., Font::Big, TEXT);
+        self.text(
+            &format!("{} / {}", page + 1, p.lines.len()),
+            x + cw - 120.,
+            by + bh - 26.,
+            80.,
+            18.,
+            Font::Small,
+            MUTED,
+        );
+        self.text(
+            "※人物の言葉は、史料に基づく事実を本人の語りとして再構成したものです。「」内の史料の引用を除き、実際の発言ではありません。",
+            x + 26., y + ch - 84., cw - 52., 34., Font::Small, MUTED,
+        );
+        let last = page + 1 >= p.lines.len();
+        self.button(
+            "詳しく（図鑑）",
+            [x + 24., y + ch - 46., 150., 34.],
+            Act::Detail(Entry::Person(i)),
+            false,
+        );
+        if page > 0 {
+            self.button(
+                "‹ 前へ",
+                [x + cw - 330., y + ch - 46., 120., 34.],
+                Act::Prev,
+                false,
+            );
+        }
+        self.button(
+            if last { "別れる" } else { "次へ ›" },
+            [x + cw - 200., y + ch - 46., 176., 34.],
+            Act::Next,
+            true,
+        );
+    }
+
+    /// 出来事の場面の高さ（画像が無ければ0）
+    fn banner_h(&mut self, i: usize, tw: f32) -> f32 {
+        if self.gfx.image(&images::event(EVENTS[i].id)).is_some() {
+            (tw * 9. / 16.).min(320.) + 12.
+        } else {
+            0.
+        }
+    }
+
+    /// 出来事の場面の画像を描き、使った高さを返す
+    fn banner(&mut self, i: usize, x: f32, y: f32, tw: f32) -> f32 {
+        let Some(img) = self.gfx.image(&images::event(EVENTS[i].id)) else {
+            return 0.;
+        };
+        let h = (tw * 9. / 16.).min(320.);
+        cover(&mut self.gfx, &img, [x, y, tw, h], 16. / 9., 1.);
+        self.gfx
+            .stroke_rect(x, y, x + tw, y + h, 1., alpha(GOLD, 0.6));
+        image_tag(&mut self.gfx, x + tw, y + h);
+        h + 12.
+    }
+
+    fn observe_ui(&mut self, i: usize) {
+        let e = &EVENTS[i];
+        let tw = 860.0f32.min(self.gfx.width as f32 - 32.) - 60.;
+        let mut need = 98. + 60. + 60.;
+        for para in e.body {
+            need += self.gfx.measure_h(para, Font::Normal, tw) + 10.;
+        }
+        need += self.gfx.measure_h(e.source, Font::Small, tw - 40.);
+        if !e.people.is_empty() {
+            need += 64.;
+        }
+        need += self.banner_h(i, tw);
+        let [x, y, cw, ch] = self.card(860., need.max(320.));
+        let place = place_index(e.era, e.place)
+            .map(|k| ERAS[e.era].places[k].name)
+            .unwrap_or("");
+        self.text(
+            "― 観察 ―",
+            x + 24.,
+            y + 14.,
+            cw - 48.,
+            20.,
+            Font::NormalCenter,
+            CYAN,
+        );
+        self.text(
+            &format!("{}　／　{}　／　{}", e.date, ERAS[e.era].name, place),
+            x + 30.,
+            y + 40.,
+            cw - 60.,
+            18.,
+            Font::Small,
+            GOLD,
+        );
+        self.text(e.title, x + 30., y + 60., cw - 60., 30., Font::Big, TEXT);
+        let body_y = y + 98.;
+        let body_h = ch - 98. - 60.;
+        self.scroll_areas
+            .push(([x, body_y, cw, body_h], Scroll::Overlay));
+        let off = self.scroll[Scroll::Overlay as usize];
+        self.gfx.clip_begin(x, body_y, x + cw, body_y + body_h);
+        let mut yy = body_y + 4. - off;
+        yy += self.banner(i, x + 30., yy, tw);
+        for para in e.body {
+            let ph = self.gfx.measure_h(para, Font::Normal, tw);
+            self.text(para, x + 30., yy, tw, ph, Font::Normal, TEXT);
+            yy += ph + 10.;
+        }
+        if !e.people.is_empty() {
+            self.text(
+                "関わった人物",
+                x + 30.,
+                yy + 4.,
+                tw,
+                18.,
+                Font::Small,
+                MUTED,
+            );
+            yy += 26.;
+            let mut px = x + 30.;
+            for id in e.people {
+                if let Some(k) = person_index(id) {
+                    let known = self.journal.met[k] || self.reveal;
+                    let name = if known { PEOPLE[k].name } else { "？？？" };
+                    let nw = self.gfx.measure(name, Font::Small) + 22.;
+                    if px + nw > x + cw - 30. {
+                        px = x + 30.;
+                        yy += 30.;
+                    }
+                    self.gfx.fill_round(
+                        px,
+                        yy,
+                        px + nw,
+                        yy + 24.,
+                        12.,
+                        if known {
+                            PANEL2
+                        } else {
+                            [0.10, 0.13, 0.20, 1.]
+                        },
+                    );
+                    self.gfx.stroke_round(
+                        px,
+                        yy,
+                        px + nw,
+                        yy + 24.,
+                        12.,
+                        1.,
+                        if known { GOLD } else { LOCKED },
+                    );
+                    self.text(
+                        name,
+                        px + 11.,
+                        yy + 4.,
+                        nw - 22.,
+                        17.,
+                        Font::Small,
+                        if known { TEXT } else { MUTED },
+                    );
+                    px += nw + 8.;
+                }
+            }
+            yy += 34.;
+        }
+        let sh = self.gfx.measure_h(e.source, Font::Small, tw - 40.);
+        self.text(
+            &format!("史料：{}", e.source),
+            x + 30.,
+            yy,
+            tw,
+            sh + 4.,
+            Font::Small,
+            MUTED,
+        );
+        yy += sh + 10.;
+        self.scroll_max[Scroll::Overlay as usize] = yy + off - body_y - body_h;
+        self.gfx.clip_end();
+        self.button(
+            "図鑑で見る",
+            [x + 24., y + ch - 48., 150., 34.],
+            Act::Detail(Entry::Event(i)),
+            false,
+        );
+        self.button(
+            "観察を終える",
+            [x + cw - 200., y + ch - 48., 176., 34.],
+            Act::Close,
+            true,
+        );
+    }
+
+    // -------------------------------------------------------------- 図鑑
+    fn codex_match_person(&self, i: usize) -> bool {
+        let p = &PEOPLE[i];
+        if self.filter.is_some_and(|f| p.era != f) {
+            return false;
+        }
+        if self.query.is_empty() {
+            return true;
+        }
+        (self.journal.met[i] || self.reveal)
+            && contains(
+                &[p.name, p.native, p.role, p.bio, p.life, ERAS[p.era].name],
+                &self.query,
+            )
+    }
+    fn codex_match_event(&self, i: usize) -> bool {
+        let e = &EVENTS[i];
+        if self.filter.is_some_and(|f| e.era != f) {
+            return false;
+        }
+        if self.query.is_empty() {
+            return true;
+        }
+        (self.journal.seen[i] || self.reveal)
+            && (contains(&[e.title, e.date, ERAS[e.era].name], &self.query)
+                || contains(e.body, &self.query))
+    }
+
+    fn codex_ui(&mut self) {
+        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
+        let top = self.top();
+        let compact = self.gfx.compact;
+        self.gfx.fill_rect(0., top, w, h, [0.06, 0.09, 0.16, 1.]);
+        // 見出しと切り替え
+        let tabs = [
+            ("人物一覧表", Tab::People),
+            ("年表", Tab::Timeline),
+            ("出来事集", Tab::Events),
+            ("秘宝", Tab::Treasures),
+        ];
+        let tw = if compact { 112. } else { 140. };
+        for (k, (label, t)) in tabs.iter().enumerate() {
+            self.button(
+                label,
+                [16. + k as f32 * (tw + 8.), top + 12., tw, 36.],
+                Act::Tab(*t),
+                self.tab == *t,
+            );
+        }
+        let sb = self.search_box();
+        let sx = sb[0];
+        self.gfx
+            .fill_round(sb[0], sb[1], sb[0] + sb[2], sb[1] + sb[3], 6., PANEL2);
+        self.gfx.stroke_round(
+            sb[0],
+            sb[1],
+            sb[0] + sb[2],
+            sb[1] + sb[3],
+            6.,
+            1.,
+            if self.searching { GOLD } else { EDGE },
+        );
+        if self.query.is_empty() {
+            self.text(
+                if self.searching {
+                    "入力してください…"
+                } else {
+                    "名前・出来事・年で検索"
+                },
+                sb[0],
+                sb[1] + 2.,
+                sb[2],
+                sb[3] - 4.,
+                Font::NormalCenter,
+                MUTED,
+            );
+        } else {
+            let q = self.query.clone();
+            self.text(
+                &q,
+                sb[0],
+                sb[1] + 2.,
+                sb[2],
+                sb[3] - 4.,
+                Font::NormalCenter,
+                TEXT,
+            );
+        }
+        self.buttons.push(Button {
+            rect: sb,
+            act: Act::Search,
+        });
+        let rx = 16. + 4. * (tw + 8.);
+        if sx - rx > 150. {
+            self.button(
+                if self.reveal {
+                    "未発見も表示：ON"
+                } else {
+                    "未発見も表示：OFF"
+                },
+                [sx - 166., top + 14., 150., 32.],
+                Act::Reveal,
+                self.reveal,
+            );
+        }
+        // 時代の絞り込み
+        let mut fx = 16.;
+        let fy = top + 58.;
+        let chips: Vec<(String, Option<usize>)> = std::iter::once(("すべて".to_string(), None))
+            .chain(
+                ERAS.iter()
+                    .enumerate()
+                    .map(|(i, e)| (e.name.to_string(), Some(i))),
+            )
+            .collect();
+        for (label, f) in chips {
+            let cw = self.gfx.measure(&label, Font::Small) + 24.;
+            if fx + cw > w - 16. {
+                break;
+            }
+            let on = self.filter == f;
+            let c = f.map(era_color).unwrap_or(GOLD);
+            self.gfx.fill_round(
+                fx,
+                fy,
+                fx + cw,
+                fy + 26.,
+                13.,
+                if on { alpha(c, 0.9) } else { PANEL2 },
+            );
+            self.gfx
+                .stroke_round(fx, fy, fx + cw, fy + 26., 13., 1., alpha(c, 0.9));
+            self.text(
+                &label,
+                fx + 4.,
+                fy + 4.,
+                cw - 8.,
+                18.,
+                Font::Small,
+                if on { NIGHT } else { TEXT },
+            );
+            self.buttons.push(Button {
+                rect: [fx, fy, cw, 26.],
+                act: Act::Filter(f),
+            });
+            fx += cw + 6.;
+        }
+        let gy = fy + 36.;
+        let view = [0., gy, w, h - gy];
+        self.scroll_areas.push((view, Scroll::Codex));
+        let off = self.scroll[Scroll::Codex as usize];
+        self.gfx.clip_begin(0., gy, w, h);
+        let content = match self.tab {
+            Tab::People => self.codex_people(gy - off, w, gy, h),
+            Tab::Timeline => self.codex_timeline(gy - off, w, gy, h),
+            Tab::Events => self.codex_events(gy - off, w, gy, h),
+            Tab::Treasures => self.codex_treasures(gy - off, w, gy, h),
+        };
+        self.gfx.clip_end();
+        self.scroll_max[Scroll::Codex as usize] = content - view[3] + 20.;
+    }
+
+    /// 戻り値：中身の高さ
+    fn codex_people(&mut self, y0: f32, w: f32, vy0: f32, vy1: f32) -> f32 {
+        let order = people_order();
+        let items: Vec<usize> = order
+            .iter()
+            .copied()
+            .filter(|i| self.codex_match_person(*i))
+            .collect();
+        let cols = (((w - 32.) / 230.) as usize).max(2);
+        let cw = (w - 32. - (cols - 1) as f32 * 10.) / cols as f32;
+        let ch = 132.;
+        self.text(
+            &format!(
+                "出会った人物 {}/{}",
+                self.met_count(self.filter),
+                PEOPLE
+                    .iter()
+                    .filter(|p| self.filter.is_none_or(|f| p.era == f))
+                    .count()
+            ),
+            18.,
+            y0 + 2.,
+            400.,
+            20.,
+            Font::Normal,
+            CYAN,
+        );
+        let y0 = y0 + 28.;
+        for (k, i) in items.iter().enumerate() {
+            let x = 16. + (k % cols) as f32 * (cw + 10.);
+            let y = y0 + (k / cols) as f32 * (ch + 10.);
+            if y + ch < vy0 || y > vy1 {
+                continue;
+            }
+            let p = &PEOPLE[*i];
+            let known = self.journal.met[*i] || self.reveal;
+            let found = self.journal.met[*i];
+            self.gfx.fill_round(
+                x,
+                y,
+                x + cw,
+                y + ch,
+                8.,
+                if known {
+                    PANEL2
+                } else {
+                    [0.09, 0.12, 0.19, 1.]
+                },
+            );
+            self.gfx.stroke_round(
+                x,
+                y,
+                x + cw,
+                y + ch,
+                8.,
+                1.,
+                if found {
+                    alpha(era_color(p.era), 0.9)
+                } else {
+                    alpha(LOCKED, 0.7)
+                },
+            );
+            let no = order.iter().position(|q| q == i).unwrap_or(0) + 1;
+            self.text(
+                &format!("No.{:03}", no),
+                x + 10.,
+                y + 8.,
+                80.,
+                16.,
+                Font::Small,
+                if found { GOLD } else { LOCKED },
+            );
+            self.medallion(p.name, x + 36., y + 62., 24., era_color(p.era), known);
+            let tx = x + 70.;
+            let tw = cw - 80.;
+            if known {
+                self.text(p.name, tx, y + 34., tw, 40., Font::Normal, TEXT);
+                self.text(p.life, tx, y + 76., tw, 16., Font::Small, MUTED);
             } else {
-                "○ 未撮影の出来事"
+                self.text("？？？", tx, y + 40., tw, 20., Font::Normal, MUTED);
+                let place = place_index(p.era, p.place)
+                    .map(|k| ERAS[p.era].places[k].name)
+                    .unwrap_or("");
+                self.text(
+                    &format!("{}で会える", place),
+                    tx,
+                    y + 66.,
+                    tw,
+                    30.,
+                    Font::Small,
+                    LOCKED,
+                );
+            }
+            self.text(
+                ERAS[p.era].name,
+                x + 10.,
+                y + ch - 24.,
+                cw - 20.,
+                16.,
+                Font::Small,
+                alpha(era_color(p.era), 0.95),
+            );
+            if inside([x, y, cw, ch], x, y) && y >= vy0 - ch {
+                self.buttons.push(Button {
+                    rect: [x, y.max(vy0), cw, (y + ch).min(vy1) - y.max(vy0)],
+                    act: Act::Detail(Entry::Person(*i)),
+                });
+            }
+        }
+        if items.is_empty() {
+            self.text(
+                "該当する人物がいません。（検索は発見済みの項目が対象です）",
+                18.,
+                y0 + 10.,
+                w - 36.,
+                24.,
+                Font::Normal,
+                MUTED,
+            );
+        }
+        28. + (items.len().div_ceil(cols)) as f32 * (ch + 10.)
+    }
+
+    fn codex_treasures(&mut self, y0: f32, w: f32, vy0: f32, vy1: f32) -> f32 {
+        let items: Vec<usize> = (0..ERAS.len())
+            .filter(|i| self.filter.is_none_or(|f| f == *i))
+            .collect();
+        self.text(
+            &format!("手に入れた秘宝 {}/{}", self.treasure_count(), ERAS.len()),
+            18.,
+            y0 + 2.,
+            400.,
+            20.,
+            Font::Normal,
+            CYAN,
+        );
+        let cols = (((w - 32.) / 330.) as usize).max(2);
+        let cw = (w - 32. - (cols - 1) as f32 * 10.) / cols as f32;
+        let ch = 150.;
+        let y0 = y0 + 28.;
+        for (k, era) in items.iter().enumerate() {
+            let x = 16. + (k % cols) as f32 * (cw + 10.);
+            let y = y0 + (k / cols) as f32 * (ch + 10.);
+            if y + ch < vy0 || y > vy1 {
+                continue;
+            }
+            let got = self.journal.treasures[*era];
+            let known = got || self.reveal;
+            let c = era_color(*era);
+            let t = treasure(*era);
+            self.gfx.fill_round(
+                x,
+                y,
+                x + cw,
+                y + ch,
+                8.,
+                if known {
+                    PANEL2
+                } else {
+                    [0.09, 0.12, 0.19, 1.]
+                },
+            );
+            self.gfx.stroke_round(
+                x,
+                y,
+                x + cw,
+                y + ch,
+                8.,
+                1.5,
+                if got { GOLD } else { alpha(LOCKED, 0.7) },
+            );
+            self.gem_era(x + 50., y + 70., 30., *era, known);
+            let tx = x + 96.;
+            let tw = cw - 108.;
+            self.text(
+                &format!("{}　{}", ERAS[*era].years, ERAS[*era].name),
+                tx,
+                y + 12.,
+                tw,
+                18.,
+                Font::Small,
+                alpha(c, 0.95),
+            );
+            if known {
+                self.text(t.name, tx, y + 34., tw, 26., Font::Big, TEXT);
+                self.gfx
+                    .clip_begin(x, y.max(vy0), x + cw, (y + ch - 8.).min(vy1));
+                self.text(t.desc, tx, y + 64., tw, 72., Font::Small, MUTED);
+                self.gfx.clip_end();
+            } else {
+                self.text("？？？", tx, y + 34., tw, 26., Font::Big, MUTED);
+                let hint = if self.era_complete(*era) {
+                    "アカシックレコードの試練に全問正解すると手に入る"
+                } else {
+                    "この時代の人物と出来事をすべて集めると、試練に挑める"
+                };
+                self.text(hint, tx, y + 66., tw, 40., Font::Small, LOCKED);
+            }
+            self.buttons.push(Button {
+                rect: [x, y.max(vy0), cw, (y + ch).min(vy1) - y.max(vy0)],
+                act: Act::Treasure(*era),
+            });
+        }
+        28. + items.len().div_ceil(cols) as f32 * (ch + 10.)
+    }
+
+    /// 秘宝の印。秘宝の画像があればそれを描く
+    fn gem_era(&mut self, x: f32, y: f32, r: f32, era: usize, lit: bool) {
+        if lit {
+            if let Some(img) = self.gfx.image(&images::treasure_image(era)) {
+                let p = 0.5 + 0.5 * (self.clock * 2.).sin();
+                self.gfx
+                    .fill_circle(x, y, r + 8. + p * 3., alpha(era_color(era), 0.22));
+                let s = r * 1.25;
+                self.gfx.draw_image(&img, x - s, y - s, x + s, y + s, 1.);
+                return;
+            }
+        }
+        self.gem(x, y, r, era_color(era), lit);
+    }
+
+    /// 秘宝の印（輝く宝石）
+    fn gem(&mut self, x: f32, y: f32, r: f32, c: [f32; 4], lit: bool) {
+        if lit {
+            let p = 0.5 + 0.5 * (self.clock * 2.).sin();
+            self.gfx.fill_circle(x, y, r + 8. + p * 3., alpha(c, 0.18));
+        }
+        self.gfx.fill_circle(
+            x,
+            y,
+            r,
+            if lit {
+                mix(NIGHT, c, 0.75)
+            } else {
+                [0.13, 0.17, 0.25, 1.]
             },
-            x + w - 185.,
-            y + 80.,
-            165.,
-            24.,
+        );
+        self.gfx
+            .stroke_circle(x, y, r, 2., if lit { GOLD } else { LOCKED });
+        self.gfx.stroke_circle(
+            x,
+            y,
+            r * 0.62,
+            1.,
+            alpha(if lit { TEXT } else { MUTED }, 0.5),
+        );
+        self.text(
+            if lit { "◆" } else { "？" },
+            x - r,
+            y - r,
+            r * 2.,
+            r * 2.,
+            Font::BigCenter,
+            if lit { TEXT } else { MUTED },
+        );
+    }
+
+    /// 試練の背景（星の巡る記録の輪）
+    fn akashic_backdrop(&mut self) {
+        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
+        self.gfx.fill_rect(0., 0., w, h, [0.01, 0.03, 0.08, 0.86]);
+        if let Some(img) = self.gfx.image(images::AKASHIC) {
+            cover(&mut self.gfx, &img, [0., 0., w, h], 16. / 9., 0.9);
+        }
+        let (cx, cy) = (w / 2., h / 2.);
+        for k in 0..5 {
+            let r = 120. + k as f32 * 90. + (self.clock * 0.6 + k as f32).sin() * 6.;
+            self.gfx
+                .stroke_circle(cx, cy, r, 1., alpha(CYAN, 0.10 + 0.04 * (4 - k) as f32));
+        }
+        for k in 0..24 {
+            let a = k as f32 / 24. * std::f32::consts::TAU + self.clock * 0.05;
+            let r = 300. + (k % 3) as f32 * 60.;
+            self.gfx.fill_circle(
+                cx + a.cos() * r,
+                cy + a.sin() * r * 0.6,
+                1.6,
+                alpha(CYAN, 0.5),
+            );
+        }
+    }
+
+    fn trial_card(&mut self, cw: f32, ch: f32) -> [f32; 4] {
+        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
+        self.akashic_backdrop();
+        let cw = cw.min(w - 32.);
+        let ch = ch.min(h - 24.);
+        let (x, y) = ((w - cw) / 2., (h - ch) / 2.);
+        self.gfx
+            .fill_round(x, y, x + cw, y + ch, 12., [0.05, 0.10, 0.18, 0.97]);
+        self.gfx
+            .stroke_round(x + 0.5, y + 0.5, x + cw - 0.5, y + ch - 0.5, 12., 1.5, CYAN);
+        self.gfx.stroke_round(
+            x + 5.,
+            y + 5.,
+            x + cw - 5.,
+            y + ch - 5.,
+            9.,
+            1.,
+            alpha(GOLD, 0.5),
+        );
+        [x, y, cw, ch]
+    }
+
+    fn trial_intro_ui(&mut self, era: usize) {
+        let compact = self.gfx.compact;
+        let [x, y, cw, ch] = self.trial_card(760., if compact { 420. } else { 460. });
+        self.text(
+            "― アカシックレコードの試練 ―",
+            x,
+            y + 26.,
+            cw,
+            26.,
+            Font::BigCenter,
+            CYAN,
+        );
+        self.text(
+            &format!("{}　{}", ERAS[era].years, ERAS[era].name),
+            x,
+            y + 60.,
+            cw,
+            22.,
             Font::NormalCenter,
             GOLD,
         );
-    }
-    fn scene_ui(&mut self) {
-        let [x, y, w, h] = self.area();
-        let e = &EVENTS[self.journal.selected];
-        let street = self.mode == Mode::Street;
-        self.gfx
-            .fill_round(x + 20., y + 18., x + 470., y + 83., 9., WHITE);
-        self.label(
-            &format!("{}  /  {}", year_text(e.year), e.place),
-            x + 36.,
-            y + 25.,
-            420.,
-            20.,
-            Font::Small,
-            MUTED,
-        );
-        self.label(e.title, x + 36., y + 47., 420., 29., Font::Big, INK);
-        self.button(
-            "地図",
-            [x + w - 244., y + 18., 64., 34.],
-            Act::Mode(Mode::Map),
+        self.gem(
+            x + cw / 2.,
+            y + if compact { 130. } else { 150. },
+            34.,
+            era_color(era),
             false,
         );
-        self.button(
-            "上空",
-            [x + w - 172., y + 18., 64., 34.],
-            Act::Mode(Mode::Aerial),
-            !street,
+        let body = format!(
+            "この時代の人物と出来事の記録が、すべてそろった。\nアカシックレコードが、あなたの理解を確かめようとしている。\n\n{}についての四択問題が{}問。全問正解すると、この時代の秘宝が手に入る。\n間違えても、何度でも挑み直せる。",
+            ERAS[era].name,
+            quizzes(era).len()
         );
-        self.button(
-            "現場",
-            [x + w - 100., y + 18., 80., 34.],
-            Act::Street,
-            street,
-        );
-        self.gfx.fill_round(
-            x + 20.,
-            y + h - 118.,
-            x + w - 20.,
-            y + h - 20.,
-            9.,
-            [0.98, 0.97, 0.93, 0.96],
-        );
-        if street {
-            self.label(
-                &format!(
-                    "現場を観察  /  方位 {:0.0}°  /  レンズ {:0.1}×",
-                    self.heading, self.lens
-                ),
-                x + 36.,
-                y + h - 107.,
-                w - 430.,
-                25.,
-                Font::Big,
-                GREEN,
-            );
-            self.label(
-                "左右ドラッグ・← → で見回す。正面の出来事をフレームに収めよう。",
-                x + 36.,
-                y + h - 71.,
-                w - 430.,
-                42.,
-                Font::Normal,
-                MUTED,
-            );
-            self.button(
-                "↶",
-                [x + w - 383., y + h - 94., 44., 44.],
-                Act::Turn(-15.),
-                false,
-            );
-            self.button(
-                "↷",
-                [x + w - 331., y + h - 94., 44., 44.],
-                Act::Turn(15.),
-                false,
-            );
-            self.button(
-                "撮影する  [Space]",
-                [x + w - 270., y + h - 94., 245., 44.],
-                Act::Capture,
-                true,
-            );
-            let (cx, cy) = (x + w * 0.5, y + h * 0.47);
-            let cw = w * 0.44;
-            let ch = h * 0.49;
-            for (sx, sy) in [(-1., -1.), (1., -1.), (-1., 1.), (1., 1.)] {
-                let (xx, yy) = (cx + sx * cw * 0.5, cy + sy * ch * 0.5);
-                self.gfx.fill_rect(
-                    xx.min(xx - sx * 24.),
-                    yy - 1.,
-                    xx.max(xx - sx * 24.),
-                    yy + 1.,
-                    WHITE,
-                );
-                self.gfx.fill_rect(
-                    xx - 1.,
-                    yy.min(yy - sy * 24.),
-                    xx + 1.,
-                    yy.max(yy - sy * 24.),
-                    WHITE,
-                );
-            }
-            self.gfx.fill_circle(cx, cy, 3., WHITE);
-            self.label(
-                "HISTORY CAMERA  ·  復元風景",
-                x + w * 0.5 - 180.,
-                y + 107.,
-                360.,
-                22.,
-                Font::NormalCenter,
-                WHITE,
-            );
-        } else {
-            self.label(
-                "上空から街を見渡す",
-                x + 36.,
-                y + h - 107.,
-                w - 330.,
-                28.,
-                Font::Big,
-                GREEN,
-            );
-            self.label(
-                "道・建物・水辺をたどって、歴史の現場に降りてみよう。",
-                x + 36.,
-                y + h - 70.,
-                w - 330.,
-                42.,
-                Font::Normal,
-                MUTED,
-            );
-            self.button(
-                "現場に降りる  ↓",
-                [x + w - 270., y + h - 94., 245., 44.],
-                Act::Street,
-                true,
-            );
-            self.button(
-                "広場へ降りる",
-                [x + w * 0.38, y + h * 0.38, 150., 38.],
-                Act::Street,
-                false,
-            );
-        }
-        self.label(
-            "年代と地域を参考にしたデフォルメ復元です。実際の航空写真・街路の再現ではありません。",
-            x + 20.,
-            y + h - 18.,
-            w - 40.,
-            18.,
-            Font::Small,
-            MUTED,
-        );
-    }
-    fn timeline(&mut self) {
-        let side = self.sidebar();
-        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
-        let x = side + 22.;
-        self.gfx.fill_rect(side, h - 184., w, h, PAPER);
-        self.gfx.fill_rect(side, h - 184., w, h - 183., LINE);
-        self.label(
-            &format!("{} の年表", REGIONS[self.journal.region].name),
-            x,
-            h - 173.,
-            300.,
-            24.,
-            Font::Big,
-            INK,
-        );
-        self.label(
-            "出来事を選ぶと、その年へ時間旅行",
-            x + 300.,
-            h - 168.,
-            360.,
-            23.,
-            Font::Small,
-            MUTED,
-        );
-        self.button("‹", [w - 100., h - 175., 34., 28.], Act::Prev(-1), false);
-        self.button("›", [w - 59., h - 175., 34., 28.], Act::Prev(1), false);
-        let v = self.filtered();
-        let n = ((w - side - 44.) / 172.).floor().max(1.) as usize;
-        let selected = v
-            .iter()
-            .position(|i| *i == self.journal.selected)
-            .unwrap_or(0);
-        let start = selected
-            .saturating_sub(n / 2)
-            .min(v.len().saturating_sub(n));
-        let cardw = (w - side - 44.) / n as f32;
-        for (k, i) in v.iter().skip(start).take(n).enumerate() {
-            let e = &EVENTS[*i];
-            let xx = x + k as f32 * cardw;
-            let active = *i == self.journal.selected;
-            self.gfx.fill_round(
-                xx,
-                h - 137.,
-                xx + cardw - 8.,
-                h - 80.,
-                6.,
-                if active {
-                    [0.87, 0.91, 0.84, 1.]
-                } else {
-                    WHITE
-                },
-            );
-            self.label(
-                &format!(
-                    "{} {}",
-                    if self.found(*i) { "●" } else { "○" },
-                    year_text(e.year)
-                ),
-                xx + 9.,
-                h - 132.,
-                cardw - 25.,
-                19.,
-                Font::Small,
-                if self.found(*i) { GOLD } else { MUTED },
-            );
-            self.label(
-                e.title,
-                xx + 9.,
-                h - 110.,
-                cardw - if self.found(*i) { 80. } else { 25. },
-                26.,
-                Font::Normal,
-                INK,
-            );
-            if let Some((_, _, bmp)) = self.thumbnails.iter().find(|(p, _, _)| p.event == *i) {
-                self.gfx
-                    .draw_bitmap(bmp, xx + cardw - 64., h - 130., xx + cardw - 14., h - 102.);
-            }
-            self.buttons.push(Button {
-                rect: [xx, h - 137., cardw - 8., 57.],
-                act: Act::Select(*i),
-            });
-        }
-        self.label("時代", x, h - 62., 60., 25., Font::Normal, GREEN);
-        let a = side + 92.;
-        let b = w - 40.;
-        let yy = h - 49.;
-        self.gfx.fill_rect(a, yy - 2., b, yy + 2., LINE);
-        let marks = [
-            (-3000, "紀元前3000"),
-            (-2000, "2000"),
-            (-1000, "1000"),
-            (1, "紀元"),
-            (1000, "1000"),
-            (2000, "2000年"),
-        ];
-        for (year, label) in marks {
-            let xx = a + (year + 3000) as f32 / 5000. * (b - a);
-            self.gfx.fill_rect(xx, yy - 6., xx + 1., yy + 6., MUTED);
-            self.label(label, xx - 38., h - 32., 76., 18., Font::Small, MUTED);
-            self.buttons.push(Button {
-                rect: [xx - 10., yy - 10., 20., 20.],
-                act: Act::Year(year),
-            });
-        }
-        let t = (self.journal.year + 3000) as f32 / 5000.;
-        let xx = a + t * (b - a);
-        self.gfx.fill_circle(xx, yy, 8., GREEN);
-        self.label(
-            &year_text(self.journal.year),
-            xx - 65.,
-            h - 77.,
-            130.,
-            20.,
+        let by = y + if compact { 182. } else { 206. };
+        self.text(
+            &body,
+            x + 40.,
+            by,
+            cw - 80.,
+            ch - (by - y) - 70.,
             Font::NormalCenter,
-            GREEN,
-        );
-    }
-    fn album_events(&self) -> Vec<usize> {
-        let mut v: Vec<usize> = self
-            .journal
-            .photos
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| {
-                self.journal.region == 0 || EVENTS[p.event].region == self.journal.region
-            })
-            .map(|(i, _)| i)
-            .collect();
-        v.sort_by_key(|i| EVENTS[self.journal.photos[*i].event].year);
-        v
-    }
-    fn album_pages(&self) -> usize {
-        self.album_events().len().div_ceil(6).max(1)
-    }
-    fn album_geometry(&mut self) {
-        let [x, y, w, h] = self.area();
-        self.gfx.rect(x, y, x + w, y + h, PAPER);
-        let ids = self.album_events();
-        self.page = self.page.min(self.album_pages() - 1);
-        let cw = (w - 72.) / 3.;
-        let ch = (h - 140.) / 2.;
-        for (k, i) in ids.iter().skip(self.page * 6).take(6).enumerate() {
-            let p = &self.journal.photos[*i];
-            let xx = x + 24. + (k % 3) as f32 * (cw + 12.);
-            let yy = y + 90. + (k / 3) as f32 * (ch + 12.);
-            scene::draw(
-                &mut self.gfx,
-                &EVENTS[p.event],
-                [xx + 7., yy + 7., cw - 14., ch - 64.],
-                false,
-                p.heading,
-                p.zoom,
-                p.time,
-            );
-        }
-    }
-    fn album_ui(&mut self) {
-        let [x, y, w, h] = self.area();
-        self.label(
-            "旅の記憶を、一枚ずつ。",
-            x + 24.,
-            y + 21.,
-            w - 250.,
-            35.,
-            Font::TitleMid,
-            GREEN,
-        );
-        self.label(
-            "撮影した復元風景を、地域と年代順に並べたあなたの写真帳",
-            x + 27.,
-            y + 59.,
-            w - 280.,
-            25.,
-            Font::Normal,
-            MUTED,
-        );
-        let ids = self.album_events();
-        if ids.is_empty() {
-            self.label(
-                "まだ、この地域の写真はありません。",
-                x + 50.,
-                y + h * 0.37,
-                w - 100.,
-                40.,
-                Font::BigCenter,
-                GREEN,
-            );
-            self.label(
-                "地図で出来事を選ぶ → 上空へ → 現場へ → 撮影",
-                x + 50.,
-                y + h * 0.47,
-                w - 100.,
-                35.,
-                Font::NormalCenter,
-                MUTED,
-            );
-            self.button(
-                "最初の一枚を撮りに行く",
-                [x + w * 0.5 - 140., y + h * 0.60, 280., 42.],
-                Act::Visit,
-                true,
-            );
-        }
-        let cw = (w - 72.) / 3.;
-        let ch = (h - 140.) / 2.;
-        for (k, i) in ids.iter().skip(self.page * 6).take(6).enumerate() {
-            let p = self.journal.photos[*i].clone();
-            let e = &EVENTS[p.event];
-            let xx = x + 24. + (k % 3) as f32 * (cw + 12.);
-            let yy = y + 90. + (k / 3) as f32 * (ch + 12.);
-            self.gfx.stroke_rect(xx, yy, xx + cw, yy + ch, 1., LINE);
-            self.gfx
-                .fill_rect(xx, yy + ch - 57., xx + cw, yy + ch, WHITE);
-            self.label(
-                &format!("{} · {}", year_text(e.year), e.place),
-                xx + 10.,
-                yy + ch - 51.,
-                cw - 20.,
-                19.,
-                Font::Small,
-                MUTED,
-            );
-            self.label(
-                e.title,
-                xx + 10.,
-                yy + ch - 29.,
-                cw - 70.,
-                26.,
-                Font::Normal,
-                INK,
-            );
-            self.label(
-                &"★".repeat(p.quality as usize),
-                xx + cw - 67.,
-                yy + ch - 29.,
-                60.,
-                23.,
-                Font::Small,
-                GOLD,
-            );
-            self.buttons.push(Button {
-                rect: [xx, yy, cw, ch],
-                act: Act::Photo(*i),
-            });
-        }
-        let pages = self.album_pages();
-        self.label(
-            &format!("{} / {}", self.page + 1, pages),
-            x + w - 210.,
-            y + 29.,
-            70.,
-            25.,
-            Font::Normal,
-            MUTED,
-        );
-        if self.page > 0 {
-            self.button("‹", [x + w - 120., y + 23., 38., 34.], Act::Page(-1), false);
-        }
-        if self.page + 1 < pages {
-            self.button("›", [x + w - 70., y + 23., 38., 34.], Act::Page(1), false);
-        }
-    }
-    fn preview_ui(&mut self) {
-        let i = self.preview.unwrap();
-        let p = self.journal.photos[i].clone();
-        let e = &EVENTS[p.event];
-        let [x, y, w, h] = self.area();
-        self.gfx.fill_rect(x, y, x + w, y + 59., PAPER);
-        self.label(
-            &format!("{}  /  {}  /  {}", year_text(e.year), e.place, e.title),
-            x + 24.,
-            y + 16.,
-            w - 200.,
-            34.,
-            Font::Big,
-            GREEN,
+            TEXT,
         );
         self.button(
-            "写真帳に戻る",
-            [x + w - 164., y + 15., 140., 34.],
+            "あとで挑む",
+            [x + 30., y + ch - 54., 160., 38.],
             Act::Close,
             false,
         );
-        self.gfx.fill_rect(x, y + h - 127., x + w, y + h, PAPER);
-        self.label(
-            e.body,
-            x + 28.,
-            y + h - 117.,
-            w - 56.,
-            60.,
-            Font::Normal,
-            INK,
+        self.button(
+            "試練を始める",
+            [x + cw - 250., y + ch - 54., 220., 38.],
+            Act::Begin(era),
+            true,
         );
-        self.label(
-            &format!("参照: {}", e.source),
-            x + 28.,
-            y + h - 48.,
-            w - 56.,
-            40.,
-            Font::Small,
+    }
+
+    fn trial_ui(&mut self, era: usize, q: usize, pick: Option<usize>, score: usize) {
+        let compact = self.gfx.compact;
+        let list = quizzes(era);
+        let quiz = &QUIZZES[list[q]];
+        let row = if compact { 42. } else { 50. };
+        let cw0 = 860.0f32.min(self.gfx.width as f32 - 32.);
+        let qh = self.gfx.measure_h(quiz.q, Font::Big, cw0 - 60.).max(26.);
+        let nh = self.gfx.measure_h(quiz.note, Font::Normal, cw0 - 60.) + 24.;
+        let need = 46. + 18. + qh + 4. * row + 34. + nh + 64.;
+        let [x, y, cw, ch] = self.trial_card(860., need);
+        self.text(
+            &format!(
+                "アカシックレコードの試練　｜　{}　第{}問 / {}",
+                ERAS[era].name,
+                q + 1,
+                list.len()
+            ),
+            x + 30.,
+            y + 18.,
+            cw - 160.,
+            20.,
+            Font::Normal,
+            CYAN,
+        );
+        let qy = y + 46.;
+        self.gfx
+            .fill_rect(x + 30., qy - 4., x + cw - 30., qy - 3., alpha(CYAN, 0.4));
+        self.text(
+            &format!("{}", quiz.q),
+            x + 30.,
+            qy + 6.,
+            cw - 60.,
+            qh,
+            Font::Big,
+            TEXT,
+        );
+        // 進み具合
+        for k in 0..list.len() {
+            let cx = x + cw - 40. - (list.len() - 1 - k) as f32 * 20.;
+            let c = if k < q || (k == q && pick.is_some()) {
+                GOLD
+            } else if k == q {
+                CYAN
+            } else {
+                LOCKED
+            };
+            self.gfx.fill_circle(cx, y + 28., 5., c);
+        }
+        let mut cy = qy + 18. + qh;
+        for (k, choice) in quiz.choices.iter().enumerate() {
+            let rr = [x + 30., cy, cw - 60., row - 8.];
+            let hover = pick.is_none() && inside(rr, self.mouse.0, self.mouse.1);
+            let (fill, edge) = match pick {
+                Some(_) if k == quiz.answer => ([0.12, 0.36, 0.28, 1.], [0.45, 0.90, 0.62, 1.]),
+                Some(p) if p == k => ([0.40, 0.14, 0.14, 1.], [0.95, 0.45, 0.40, 1.]),
+                Some(_) => ([0.08, 0.12, 0.20, 1.], alpha(EDGE, 0.5)),
+                None if hover => ([0.18, 0.28, 0.42, 1.], CYAN),
+                None => (PANEL2, EDGE),
+            };
+            self.gfx
+                .fill_round(rr[0], rr[1], rr[0] + rr[2], rr[1] + rr[3], 8., fill);
+            self.gfx
+                .stroke_round(rr[0], rr[1], rr[0] + rr[2], rr[1] + rr[3], 8., 1.2, edge);
+            self.gfx
+                .fill_circle(rr[0] + 22., rr[1] + rr[3] / 2., 13., alpha(edge, 0.9));
+            self.text(
+                &format!("{}", k + 1),
+                rr[0] + 9.,
+                rr[1] + rr[3] / 2. - 13.,
+                26.,
+                26.,
+                Font::NormalCenter,
+                NIGHT,
+            );
+            self.text(
+                choice,
+                rr[0] + 46.,
+                rr[1] + 2.,
+                rr[2] - 56.,
+                rr[3] - 4.,
+                Font::NormalCenter,
+                TEXT,
+            );
+            if pick.is_none() {
+                self.buttons.push(Button {
+                    rect: rr,
+                    act: Act::Answer(k),
+                });
+            }
+            cy += row;
+        }
+        if let Some(p) = pick {
+            let ok = p == quiz.answer;
+            let ny = cy + 2.;
+            self.text(
+                if ok { "正解！" } else { "不正解…" },
+                x + 30.,
+                ny,
+                120.,
+                24.,
+                Font::Big,
+                if ok {
+                    [0.55, 0.95, 0.68, 1.]
+                } else {
+                    [0.98, 0.55, 0.50, 1.]
+                },
+            );
+            let note = if ok {
+                quiz.note.to_string()
+            } else {
+                format!("正解は「{}」。{}", quiz.choices[quiz.answer], quiz.note)
+            };
+            self.text(
+                &note,
+                x + 30.,
+                ny + 28.,
+                cw - 60.,
+                y + ch - 60. - ny - 28.,
+                Font::Normal,
+                MUTED,
+            );
+            let last = q + 1 >= list.len();
+            self.button(
+                if last {
+                    "結果を見る"
+                } else {
+                    "次の問題へ"
+                },
+                [x + cw - 230., y + ch - 50., 200., 36.],
+                Act::TrialNext,
+                true,
+            );
+        } else {
+            self.text(
+                "1〜4のキーでも答えられます",
+                x + 30.,
+                y + ch - 42.,
+                300.,
+                20.,
+                Font::Small,
+                MUTED,
+            );
+        }
+        self.text(
+            &format!("正解 {}", score),
+            x + cw / 2. - 60.,
+            y + ch - 42.,
+            120.,
+            20.,
+            Font::NormalCenter,
             MUTED,
         );
     }
-    fn help_ui(&mut self) {
-        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
-        self.gfx.fill_rect(0., 0., w, h, [0.10, 0.18, 0.17, 0.65]);
-        let x = w * 0.5 - 380.;
-        let y = h * 0.5 - 260.;
-        self.gfx.fill_round(x, y, x + 760., y + 520., 16., PAPER);
-        self.label(
-            "地図の向こうに、歴史の現場へ。",
-            x + 32.,
-            y + 25.,
-            696.,
-            48.,
-            Font::TitleMid,
-            GREEN,
+
+    fn trial_result_ui(&mut self, era: usize, score: usize) {
+        let n = quizzes(era).len();
+        let win = score == n;
+        let compact = self.gfx.compact;
+        let dh = self.gfx.measure_h(
+            treasure(era).desc,
+            Font::Normal,
+            800.0f32.min(self.gfx.width as f32 - 32.) - 80.,
         );
-        let body="1  地域を選ぶ。中華・ヨーロッパ・日本などの年表を開きます。\n\n2  出来事や地図のピンを選ぶ。下の時間軸では好きな年代へ。\n\n3  「上空へ」で街へ。「現場に降りる」で街路の風景へ。\n\n4  左右ドラッグ・矢印で見回し、Space または撮影ボタン。\n\n5  写真帳で地域別・年代順に並ぶ写真を見返せます。\n\n地図はドラッグで移動、ホイール・＋−で拡大縮小。\nF2 写真帳 / F3 使い方 / F11 全画面 / Esc 戻る\n\n勢力の楕円は影響圏の概略です。国境ではありません。\n街は創作を含むデフォルメ復元。写真は構図を固定した記録です。";
-        self.label(body, x + 38., y + 92., 684., 350., Font::Normal, INK);
+        let top = if compact { 122. } else { 140. };
+        let [x, y, cw, ch] = self.trial_card(800., if win { top + 72. + dh + 76. } else { 340. });
+        self.text("― 試練の結果 ―", x, y + 22., cw, 24., Font::BigCenter, CYAN);
+        self.text(
+            &format!("{}問中 {}問 正解", n, score),
+            x,
+            y + 54.,
+            cw,
+            30.,
+            Font::BigCenter,
+            if win { GOLD } else { TEXT },
+        );
+        if win {
+            let t = treasure(era);
+            let gy = y + top;
+            self.gem_era(x + 80., gy + 20., 40., era, true);
+            self.text(
+                "秘宝を手に入れた",
+                x + 140.,
+                gy - 16.,
+                cw - 170.,
+                18.,
+                Font::Small,
+                GOLD,
+            );
+            self.text(t.name, x + 140., gy + 4., cw - 170., 30., Font::Big, TEXT);
+            let dy = gy + 72.;
+            self.gfx.clip_begin(x, dy, x + cw, y + ch - 60.);
+            self.text(
+                t.desc,
+                x + 40.,
+                dy,
+                cw - 80.,
+                y + ch - 60. - dy,
+                Font::Normal,
+                MUTED,
+            );
+            self.gfx.clip_end();
+            self.button(
+                "図鑑の秘宝を見る",
+                [x + 30., y + ch - 50., 190., 36.],
+                Act::Treasure(era),
+                false,
+            );
+            self.button(
+                "旅に戻る",
+                [x + cw - 210., y + ch - 50., 180., 36.],
+                Act::Close,
+                true,
+            );
+        } else {
+            let body = "全問正解には届かなかった。\n\nこの時代の人物の話や出来事の記録を、図鑑で読み返してから挑み直そう。\n間違えた問題の解説にも、ヒントがある。";
+            self.text(
+                body,
+                x + 50.,
+                y + 100.,
+                cw - 100.,
+                ch - 170.,
+                Font::NormalCenter,
+                TEXT,
+            );
+            self.button(
+                "図鑑で復習する",
+                [x + 30., y + ch - 50., 180., 36.],
+                Act::Codex,
+                false,
+            );
+            self.button(
+                "もう一度挑む",
+                [x + cw / 2. - 90., y + ch - 50., 180., 36.],
+                Act::Begin(era),
+                true,
+            );
+            self.button(
+                "旅に戻る",
+                [x + cw - 190., y + ch - 50., 160., 36.],
+                Act::Close,
+                false,
+            );
+        }
+    }
+
+    fn treasure_ui(&mut self, era: usize) {
+        let got = self.journal.treasures[era];
+        let known = got || self.reveal;
+        let t = treasure(era);
+        let tw = 760.0f32.min(self.gfx.width as f32 - 32.) - 80.;
+        let need = if known {
+            220. + self.gfx.measure_h(t.desc, Font::Normal, tw)
+                + self.gfx.measure_h(t.source, Font::Small, tw)
+        } else {
+            300.
+        };
+        let [x, y, cw, ch] = self.card(760., need);
+        self.text(
+            &format!(
+                "秘宝　{}　{}{}",
+                ERAS[era].years,
+                ERAS[era].name,
+                if got { "" } else { "（未獲得）" }
+            ),
+            x + 30.,
+            y + 18.,
+            cw - 60.,
+            18.,
+            Font::Small,
+            if got { GOLD } else { LOCKED },
+        );
+        self.gem_era(x + 74., y + 90., 40., era, known);
+        if known {
+            self.text(t.name, x + 136., y + 72., cw - 166., 30., Font::Big, TEXT);
+            let dy = y + 150.;
+            let dh = self.gfx.measure_h(t.desc, Font::Normal, cw - 80.);
+            self.text(t.desc, x + 40., dy, cw - 80., dh, Font::Normal, TEXT);
+            self.text(
+                &format!("史料・所蔵：{}", t.source),
+                x + 40.,
+                dy + dh + 10.,
+                cw - 80.,
+                40.,
+                Font::Small,
+                MUTED,
+            );
+        } else {
+            self.text(
+                "？？？",
+                x + 136.,
+                y + 72.,
+                cw - 166.,
+                30.,
+                Font::Big,
+                MUTED,
+            );
+            self.text(
+                "この時代の人物と出来事をすべて集め、アカシックレコードの試練に全問正解すると手に入る。",
+                x + 40., y + 150., cw - 80., 60., Font::Normal, LOCKED,
+            );
+        }
         self.button(
-            "探索に戻る",
-            [x + 245., y + 457., 270., 40.],
+            "閉じる",
+            [x + cw - 160., y + ch - 48., 136., 34.],
+            Act::Close,
+            true,
+        );
+    }
+
+    fn codex_events(&mut self, y0: f32, w: f32, vy0: f32, vy1: f32) -> f32 {
+        let items: Vec<usize> = chronology()
+            .into_iter()
+            .filter(|i| self.codex_match_event(*i))
+            .collect();
+        let cols = (((w - 32.) / 300.) as usize).max(2);
+        let cw = (w - 32. - (cols - 1) as f32 * 10.) / cols as f32;
+        let ch = 118.;
+        self.text(
+            &format!(
+                "観察した出来事 {}/{}",
+                self.seen_count(self.filter),
+                EVENTS
+                    .iter()
+                    .filter(|e| self.filter.is_none_or(|f| e.era == f))
+                    .count()
+            ),
+            18.,
+            y0 + 2.,
+            400.,
+            20.,
+            Font::Normal,
+            CYAN,
+        );
+        let y0 = y0 + 28.;
+        for (k, i) in items.iter().enumerate() {
+            let x = 16. + (k % cols) as f32 * (cw + 10.);
+            let y = y0 + (k / cols) as f32 * (ch + 10.);
+            if y + ch < vy0 || y > vy1 {
+                continue;
+            }
+            let e = &EVENTS[*i];
+            let known = self.journal.seen[*i] || self.reveal;
+            let found = self.journal.seen[*i];
+            let c = era_color(e.era);
+            self.gfx.fill_round(
+                x,
+                y,
+                x + cw,
+                y + ch,
+                8.,
+                if known {
+                    PANEL2
+                } else {
+                    [0.09, 0.12, 0.19, 1.]
+                },
+            );
+            self.gfx.stroke_round(
+                x,
+                y,
+                x + cw,
+                y + ch,
+                8.,
+                1.,
+                if found {
+                    alpha(c, 0.9)
+                } else {
+                    alpha(LOCKED, 0.7)
+                },
+            );
+            self.gfx.fill_rect(
+                x + 1.,
+                y + 10.,
+                x + 5.,
+                y + ch - 10.,
+                if found { c } else { LOCKED },
+            );
+            let no = chronology().iter().position(|q| q == i).unwrap_or(0) + 1;
+            self.text(
+                &format!("No.{:03}", no),
+                x + 14.,
+                y + 8.,
+                80.,
+                16.,
+                Font::Small,
+                if found { GOLD } else { LOCKED },
+            );
+            self.text(
+                e.date,
+                x + 84.,
+                y + 8.,
+                cw - 96.,
+                16.,
+                Font::Small,
+                if known { GOLD } else { MUTED },
+            );
+            if known {
+                // 場面の画像があれば右に小さく
+                let thumb = self.gfx.image(&images::event(e.id));
+                let tw = if thumb.is_some() { cw - 150. } else { cw - 28. };
+                self.gfx
+                    .clip_begin(x, y.max(vy0), x + cw, (y + ch - 4.).min(vy1));
+                if let Some(img) = thumb {
+                    let (tx, ty) = (x + cw - 130., y + 30.);
+                    self.gfx.draw_image(&img, tx, ty, tx + 118., ty + 66.4, 1.);
+                    self.gfx
+                        .stroke_rect(tx, ty, tx + 118., ty + 66.4, 1., alpha(GOLD, 0.5));
+                }
+                self.text(e.title, x + 14., y + 30., tw, 24., Font::Big, TEXT);
+                let lead = e.body[0];
+                self.gfx.clip_end();
+                self.gfx
+                    .clip_begin(x, y.max(vy0), x + 14. + tw, (y + ch - 26.).min(vy1));
+                self.text(lead, x + 14., y + 56., tw, 36., Font::Small, MUTED);
+                self.gfx.clip_end();
+            } else {
+                self.text("？？？", x + 14., y + 30., cw - 28., 24., Font::Big, MUTED);
+                let place = place_index(e.era, e.place)
+                    .map(|k| ERAS[e.era].places[k].name)
+                    .unwrap_or("");
+                self.text(
+                    &format!("{}で観察できる", place),
+                    x + 14.,
+                    y + 58.,
+                    cw - 28.,
+                    30.,
+                    Font::Small,
+                    LOCKED,
+                );
+            }
+            self.text(
+                ERAS[e.era].name,
+                x + 14.,
+                y + ch - 22.,
+                cw - 28.,
+                16.,
+                Font::Small,
+                alpha(c, 0.95),
+            );
+            self.buttons.push(Button {
+                rect: [x, y.max(vy0), cw, (y + ch).min(vy1) - y.max(vy0)],
+                act: Act::Detail(Entry::Event(*i)),
+            });
+        }
+        if items.is_empty() {
+            self.text(
+                "該当する出来事がありません。（検索は発見済みの項目が対象です）",
+                18.,
+                y0 + 10.,
+                w - 36.,
+                24.,
+                Font::Normal,
+                MUTED,
+            );
+        }
+        28. + (items.len().div_ceil(cols)) as f32 * (ch + 10.)
+    }
+
+    fn codex_timeline(&mut self, y0: f32, w: f32, vy0: f32, vy1: f32) -> f32 {
+        let items: Vec<usize> = chronology()
+            .into_iter()
+            .filter(|i| self.codex_match_event(*i))
+            .collect();
+        let lx = 16.;
+        let axis = lx + if self.gfx.compact { 200. } else { 250. };
+        let mut y = y0 + 6.;
+        let mut last_era = usize::MAX;
+        let row = 46.;
+        let line_top = y;
+        for i in &items {
+            let e = &EVENTS[*i];
+            if e.era != last_era {
+                last_era = e.era;
+                let era = &ERAS[e.era];
+                y += 8.;
+                if y + 40. > vy0 && y < vy1 {
+                    let c = era_color(e.era);
+                    self.gfx.fill_round(
+                        lx,
+                        y,
+                        w - 16.,
+                        y + 36.,
+                        6.,
+                        alpha(mix(NIGHT, c, 0.35), 1.),
+                    );
+                    self.text(
+                        &format!("{}　{} ― {}", era.years, era.name, era.period),
+                        lx + 14.,
+                        y + 8.,
+                        w - 60.,
+                        22.,
+                        Font::Big,
+                        TEXT,
+                    );
+                }
+                y += 46.;
+            }
+            if y + row > vy0 && y < vy1 {
+                let known = self.journal.seen[*i] || self.reveal;
+                let found = self.journal.seen[*i];
+                let c = era_color(e.era);
+                let rr = [lx, y, w - 32., row - 6.];
+                if inside(rr, self.mouse.0, self.mouse.1) {
+                    self.gfx.fill_round(
+                        rr[0],
+                        rr[1],
+                        rr[0] + rr[2],
+                        rr[1] + rr[3],
+                        6.,
+                        [0.13, 0.19, 0.31, 1.],
+                    );
+                }
+                self.text(
+                    e.date,
+                    lx + 8.,
+                    y + 10.,
+                    axis - lx - 24.,
+                    20.,
+                    Font::Normal,
+                    if known { GOLD } else { MUTED },
+                );
+                self.gfx
+                    .fill_circle(axis, y + 20., 7., if found { c } else { LOCKED });
+                self.gfx.stroke_circle(
+                    axis,
+                    y + 20.,
+                    7.,
+                    1.5,
+                    if found { TEXT } else { alpha(MUTED, 0.6) },
+                );
+                if known {
+                    self.text(
+                        e.title,
+                        axis + 22.,
+                        y + 4.,
+                        w - axis - 60.,
+                        22.,
+                        Font::Normal,
+                        TEXT,
+                    );
+                    let place = place_index(e.era, e.place)
+                        .map(|k| ERAS[e.era].places[k].name)
+                        .unwrap_or("");
+                    self.text(
+                        place,
+                        axis + 22.,
+                        y + 24.,
+                        w - axis - 60.,
+                        16.,
+                        Font::Small,
+                        MUTED,
+                    );
+                } else {
+                    let place = place_index(e.era, e.place)
+                        .map(|k| ERAS[e.era].places[k].name)
+                        .unwrap_or("");
+                    self.text(
+                        "？？？",
+                        axis + 22.,
+                        y + 4.,
+                        w - axis - 60.,
+                        22.,
+                        Font::Normal,
+                        MUTED,
+                    );
+                    self.text(
+                        &format!("{}で観察できる", place),
+                        axis + 22.,
+                        y + 24.,
+                        w - axis - 60.,
+                        16.,
+                        Font::Small,
+                        LOCKED,
+                    );
+                }
+                self.buttons.push(Button {
+                    rect: [
+                        rr[0],
+                        rr[1].max(vy0),
+                        rr[2],
+                        (rr[1] + rr[3]).min(vy1) - rr[1].max(vy0),
+                    ],
+                    act: Act::Detail(Entry::Event(*i)),
+                });
+            }
+            y += row;
+        }
+        if !items.is_empty() {
+            self.gfx.fill_rect(
+                axis - 1.,
+                line_top.max(vy0),
+                axis + 1.,
+                y.min(vy1),
+                alpha(EDGE, 0.5),
+            );
+        } else {
+            self.text(
+                "該当する出来事がありません。（検索は発見済みの項目が対象です）",
+                18.,
+                y0 + 10.,
+                w - 36.,
+                24.,
+                Font::Normal,
+                MUTED,
+            );
+        }
+        y - y0 + 10.
+    }
+
+    fn detail_ui(&mut self, e: Entry) {
+        let need = self.detail_height(e);
+        let [x, y, cw, ch] = self.card(880., need);
+        let body_y;
+        let tw = cw - 60.;
+        let (era, place_id, known, found) = match e {
+            Entry::Person(i) => (
+                PEOPLE[i].era,
+                PEOPLE[i].place,
+                self.journal.met[i] || self.reveal,
+                self.journal.met[i],
+            ),
+            Entry::Event(i) => (
+                EVENTS[i].era,
+                EVENTS[i].place,
+                self.journal.seen[i] || self.reveal,
+                self.journal.seen[i],
+            ),
+        };
+        let place = place_index(era, place_id);
+        let place_name = place.map(|k| ERAS[era].places[k].name).unwrap_or("");
+        match e {
+            Entry::Person(i) => {
+                let p = &PEOPLE[i];
+                let no = people_order().iter().position(|q| *q == i).unwrap_or(0) + 1;
+                self.text(
+                    &format!(
+                        "人物一覧表　No.{:03}{}",
+                        no,
+                        if found { "" } else { "（未発見）" }
+                    ),
+                    x + 30.,
+                    y + 16.,
+                    tw,
+                    18.,
+                    Font::Small,
+                    if found { GOLD } else { LOCKED },
+                );
+                self.medallion(p.name, x + 74., y + 86., 42., era_color(era), known);
+                let hx = x + 136.;
+                if known {
+                    self.text(p.name, hx, y + 44., cw - 166., 28., Font::Big, TEXT);
+                    self.text(p.native, hx, y + 74., cw - 166., 18., Font::Small, MUTED);
+                    self.text(
+                        &format!("{}　／　{}", p.life, p.role),
+                        hx,
+                        y + 96.,
+                        cw - 166.,
+                        36.,
+                        Font::Normal,
+                        CYAN,
+                    );
+                } else {
+                    self.text("？？？", hx, y + 54., cw - 166., 28., Font::Big, MUTED);
+                    self.text(
+                        &format!("ヒント：{}の{}で会える", ERAS[era].name, place_name),
+                        hx,
+                        y + 90.,
+                        cw - 166.,
+                        20.,
+                        Font::Normal,
+                        LOCKED,
+                    );
+                }
+                body_y = y + 144.;
+            }
+            Entry::Event(i) => {
+                let ev = &EVENTS[i];
+                let no = chronology().iter().position(|q| *q == i).unwrap_or(0) + 1;
+                self.text(
+                    &format!(
+                        "出来事集　No.{:03}{}",
+                        no,
+                        if found { "" } else { "（未発見）" }
+                    ),
+                    x + 30.,
+                    y + 16.,
+                    tw,
+                    18.,
+                    Font::Small,
+                    if found { GOLD } else { LOCKED },
+                );
+                self.text(
+                    &format!("{}　／　{}　／　{}", ev.date, ERAS[era].name, place_name),
+                    x + 30.,
+                    y + 40.,
+                    tw,
+                    18.,
+                    Font::Small,
+                    GOLD,
+                );
+                if known {
+                    self.text(ev.title, x + 30., y + 60., tw, 30., Font::Big, TEXT);
+                } else {
+                    self.text("？？？", x + 30., y + 60., tw, 30., Font::Big, MUTED);
+                    self.text(
+                        &format!("ヒント：{}の{}で観察できる", ERAS[era].name, place_name),
+                        x + 30.,
+                        y + 92.,
+                        tw,
+                        20.,
+                        Font::Normal,
+                        LOCKED,
+                    );
+                }
+                body_y = y + 104.;
+            }
+        }
+        let body_h = y + ch - 60. - body_y;
+        self.gfx.fill_rect(
+            x + 30.,
+            body_y - 6.,
+            x + cw - 30.,
+            body_y - 5.,
+            alpha(EDGE, 0.8),
+        );
+        if known {
+            self.scroll_areas
+                .push(([x, body_y, cw, body_h], Scroll::Overlay));
+            let off = self.scroll[Scroll::Overlay as usize];
+            self.gfx.clip_begin(x, body_y, x + cw, body_y + body_h);
+            let mut yy = body_y + 6. - off;
+            if let Entry::Event(i) = e {
+                yy += self.banner(i, x + 30., yy, tw);
+            }
+            let (paras, source, links): (Vec<&str>, &str, Vec<Entry>) = match e {
+                Entry::Person(i) => (
+                    vec![PEOPLE[i].bio],
+                    PEOPLE[i].source,
+                    chronology()
+                        .into_iter()
+                        .filter(|k| EVENTS[*k].people.contains(&PEOPLE[i].id))
+                        .map(Entry::Event)
+                        .collect(),
+                ),
+                Entry::Event(i) => (
+                    EVENTS[i].body.to_vec(),
+                    EVENTS[i].source,
+                    EVENTS[i]
+                        .people
+                        .iter()
+                        .filter_map(|id| person_index(id))
+                        .map(Entry::Person)
+                        .collect(),
+                ),
+            };
+            for para in paras {
+                let ph = self.gfx.measure_h(para, Font::Normal, tw);
+                self.text(para, x + 30., yy, tw, ph, Font::Normal, TEXT);
+                yy += ph + 10.;
+            }
+            self.text(
+                &format!("ゆかりの場所：{}（{}）", place_name, ERAS[era].area),
+                x + 30.,
+                yy,
+                tw,
+                20.,
+                Font::Small,
+                MUTED,
+            );
+            yy += 28.;
+            if !links.is_empty() {
+                self.text(
+                    if matches!(e, Entry::Person(_)) {
+                        "関わった出来事"
+                    } else {
+                        "関わった人物"
+                    },
+                    x + 30.,
+                    yy,
+                    tw,
+                    18.,
+                    Font::Small,
+                    MUTED,
+                );
+                yy += 24.;
+                for l in links {
+                    let (label, ok) = match l {
+                        Entry::Person(k) => (
+                            PEOPLE[k].name.to_string(),
+                            self.journal.met[k] || self.reveal,
+                        ),
+                        Entry::Event(k) => (
+                            format!("{}　{}", EVENTS[k].date, EVENTS[k].title),
+                            self.journal.seen[k] || self.reveal,
+                        ),
+                    };
+                    let label = if ok { label } else { "？？？".to_string() };
+                    let rr = [x + 30., yy, tw, 28.];
+                    self.gfx
+                        .fill_round(rr[0], rr[1], rr[0] + rr[2], rr[1] + rr[3], 6., PANEL2);
+                    self.text(
+                        &label,
+                        x + 42.,
+                        yy + 5.,
+                        tw - 24.,
+                        18.,
+                        Font::Normal,
+                        if ok { TEXT } else { MUTED },
+                    );
+                    if yy + 28. > body_y && yy < body_y + body_h {
+                        self.buttons.push(Button {
+                            rect: [
+                                rr[0],
+                                rr[1].max(body_y),
+                                rr[2],
+                                (rr[1] + rr[3]).min(body_y + body_h) - rr[1].max(body_y),
+                            ],
+                            act: Act::Detail(l),
+                        });
+                    }
+                    yy += 34.;
+                }
+                yy += 4.;
+            }
+            let sh = self.gfx.measure_h(source, Font::Small, tw - 40.);
+            self.text(
+                &format!("史料：{}", source),
+                x + 30.,
+                yy,
+                tw,
+                sh + 4.,
+                Font::Small,
+                MUTED,
+            );
+            yy += sh + 12.;
+            self.scroll_max[Scroll::Overlay as usize] = yy + off - body_y - body_h;
+            self.gfx.clip_end();
+        }
+        if let Some(k) = place {
+            self.button(
+                "その場所へ転移",
+                [x + 24., y + ch - 48., 180., 34.],
+                Act::Shift(era, Some(k)),
+                false,
+            );
+        }
+        self.button(
+            "閉じる",
+            [x + cw - 160., y + ch - 48., 136., 34.],
+            Act::Close,
+            true,
+        );
+    }
+
+    /// 図鑑の詳しい説明の枠の高さ（中身に合わせる）
+    fn detail_height(&mut self, e: Entry) -> f32 {
+        let tw = 880.0f32.min(self.gfx.width as f32 - 32.) - 60.;
+        let (head, paras, source, links, known): (f32, Vec<&str>, &str, usize, bool) = match e {
+            Entry::Person(i) => (
+                144.,
+                vec![PEOPLE[i].bio],
+                PEOPLE[i].source,
+                EVENTS
+                    .iter()
+                    .filter(|k| k.people.contains(&PEOPLE[i].id))
+                    .count(),
+                self.journal.met[i] || self.reveal,
+            ),
+            Entry::Event(i) => (
+                104.,
+                EVENTS[i].body.to_vec(),
+                EVENTS[i].source,
+                EVENTS[i].people.len(),
+                self.journal.seen[i] || self.reveal,
+            ),
+        };
+        if !known {
+            return head + 120.;
+        }
+        let mut need = head + 6. + 28. + 60. + 16.;
+        if let Entry::Event(i) = e {
+            need += self.banner_h(i, tw);
+        }
+        for p in paras {
+            need += self.gfx.measure_h(p, Font::Normal, tw) + 10.;
+        }
+        if links > 0 {
+            need += 28. + links as f32 * 34.;
+        }
+        need + self.gfx.measure_h(source, Font::Small, tw - 40.) + 12.
+    }
+
+    fn help_ui(&mut self) {
+        let [x, y, cw, ch] = self.card(820., 600.);
+        self.text(
+            "時空を渡り、歴史に出会う",
+            x + 30.,
+            y + 20.,
+            cw - 60.,
+            40.,
+            Font::TitleMid,
+            GOLD,
+        );
+        let body = "1　世界地図で行き先の時代を選び、「転移する」でその時代へ渡ります。\n\n2　時代の地図では、場所を押すと道をたどって移動します。矢印キーでも移動できます。「人」の印はまだ会っていない人物、「！」はまだ観察していない出来事のある場所です。\n\n3　人物に「会う」と人物一覧表に、出来事を「観察」すると出来事集と年表に記録されます。\n\n4　その時代の人物と出来事をすべて集めると「アカシックレコードの試練」が始まります。時代についての四択問題5問に全問正解すると、その時代にゆかりのある実在の品が「秘宝」として手に入ります。何度でも挑み直せます。\n\n5　図鑑では、人物一覧表・年表・出来事集・秘宝を見返せます。「未発見も表示」をONにすると、まだ見つけていない項目も読めます（学習用）。\n\n―― 内容の正確さについて ――\n年代・人物・出来事は、各項目に示した史料と研究に基づいてまとめています。日付に諸説あるものや史料によって食い違うものは本文に記しています。和暦の月日は当時の暦（旧暦）のままです。\n人物の言葉は、事実を本人の語りとして再構成した教材であり、「」で示した史料の引用を除いて実際の発言ではありません。人物がいる場所は、その人物にゆかりのある場所です。地図は位置関係を示す概略図で、建物の形や距離は正確ではありません。肖像や場面の画像は、時代考証に基づくイメージ（想像図を含む）です。\n\nF2 図鑑 ／ F3 使い方 ／ F11 全画面 ／ Esc 戻る ／ Enter 次へ・転移";
+        let by = y + 72.;
+        let bh = ch - 72. - 62.;
+        self.scroll_areas.push(([x, by, cw, bh], Scroll::Overlay));
+        let off = self.scroll[Scroll::Overlay as usize];
+        let th = self.gfx.measure_h(body, Font::Normal, cw - 64.);
+        self.gfx.clip_begin(x, by, x + cw, by + bh);
+        self.text(body, x + 32., by - off, cw - 64., th, Font::Normal, TEXT);
+        self.gfx.clip_end();
+        self.scroll_max[Scroll::Overlay as usize] = th - bh + 10.;
+        self.button(
+            "旅に戻る",
+            [x + cw / 2. - 120., y + ch - 50., 240., 36.],
             Act::Close,
             true,
         );
     }
 }
+
+/// 画像を枠いっぱいに、縦横比を保って描く（はみ出す分は切り抜く）
+fn cover(g: &mut Gfx, img: &crate::gfx::Image, r: [f32; 4], aspect: f32, a: f32) {
+    let [x, y, w, h] = r;
+    let (iw, ih) = if w / h > aspect {
+        (w, w / aspect)
+    } else {
+        (h * aspect, h)
+    };
+    g.clip_begin(x, y, x + w, y + h);
+    g.draw_image(
+        img,
+        x + (w - iw) / 2.,
+        y + (h - ih) / 2.,
+        x + (w + iw) / 2.,
+        y + (h + ih) / 2.,
+        a,
+    );
+    g.clip_end();
+}
+
+/// 画像の隅に「イメージ」と示す
+fn image_tag(g: &mut Gfx, x1: f32, y1: f32) {
+    g.fill_round(x1 - 62., y1 - 24., x1 - 6., y1 - 6., 4., [0., 0., 0., 0.55]);
+    g.text(
+        "イメージ",
+        x1 - 62.,
+        y1 - 24.,
+        56.,
+        18.,
+        Font::NormalCenter,
+        [1., 1., 1., 0.9],
+    );
+}
+
+fn contains(fields: &[&str], q: &str) -> bool {
+    let q = q.to_lowercase();
+    fields.iter().any(|f| f.to_lowercase().contains(&q))
+}
+
 fn inside(r: [f32; 4], x: f32, y: f32) -> bool {
     x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3]
+}
+
+/// 多角形を耳切り法で三角形に分けて塗る
+fn fill_poly(g: &mut Gfx, pts: &[(f32, f32)], m: &dyn Fn(f32, f32) -> (f32, f32), c: [f32; 4]) {
+    let p: Vec<(f32, f32)> = pts.iter().map(|q| m(q.0, q.1)).collect();
+    for [a, b, d] in triangulate(&p) {
+        g.tri(p[a], p[b], p[d], c);
+    }
+}
+
+fn triangulate(p: &[(f32, f32)]) -> Vec<[usize; 3]> {
+    let n = p.len();
+    if n < 3 {
+        return vec![];
+    }
+    let area: f32 = (0..n)
+        .map(|i| {
+            let (a, b) = (p[i], p[(i + 1) % n]);
+            a.0 * b.1 - b.0 * a.1
+        })
+        .sum();
+    let mut idx: Vec<usize> = if area > 0. {
+        (0..n).collect()
+    } else {
+        (0..n).rev().collect()
+    };
+    let cross = |a: (f32, f32), b: (f32, f32), c: (f32, f32)| {
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
+    let mut out = vec![];
+    let mut guard = 0;
+    while idx.len() > 3 && guard < n * n {
+        guard += 1;
+        let k = idx.len();
+        let mut cut = None;
+        for i in 0..k {
+            let (ia, ib, ic) = (idx[(i + k - 1) % k], idx[i], idx[(i + 1) % k]);
+            let (a, b, c) = (p[ia], p[ib], p[ic]);
+            if cross(a, b, c) <= 0. {
+                continue;
+            }
+            let empty = idx.iter().all(|&j| {
+                j == ia || j == ib || j == ic || {
+                    let q = p[j];
+                    !(cross(a, b, q) >= 0. && cross(b, c, q) >= 0. && cross(c, a, q) >= 0.)
+                }
+            });
+            if empty {
+                cut = Some(i);
+                out.push([ia, ib, ic]);
+                break;
+            }
+        }
+        match cut {
+            Some(i) => {
+                idx.remove(i);
+            }
+            None => break,
+        }
+    }
+    if idx.len() == 3 {
+        out.push([idx[0], idx[1], idx[2]]);
+    }
+    out
+}
+
+/// 場所の種類の図柄
+fn icon(g: &mut Gfx, kind: Kind, x: f32, y: f32, s: f32) {
+    let ink = [0.36, 0.24, 0.14, 1.];
+    let red = [0.66, 0.24, 0.18, 1.];
+    let blue = [0.25, 0.48, 0.62, 1.];
+    match kind {
+        Kind::Palace => {
+            g.rect(x - s * 0.8, y - s * 0.05, x + s * 0.8, y + s * 0.6, red);
+            g.tri(
+                (x - s, y - s * 0.05),
+                (x + s, y - s * 0.05),
+                (x, y - s * 0.6),
+                ink,
+            );
+            g.rect(x - s * 0.15, y + s * 0.2, x + s * 0.15, y + s * 0.6, ink);
+        }
+        Kind::Temple => {
+            g.tri(
+                (x - s * 0.9, y - s * 0.2),
+                (x + s * 0.9, y - s * 0.2),
+                (x, y - s * 0.75),
+                ink,
+            );
+            for k in 0..4 {
+                let cx = x - s * 0.6 + k as f32 * s * 0.4;
+                g.rect(cx - s * 0.08, y - s * 0.15, cx + s * 0.08, y + s * 0.5, ink);
+            }
+            g.rect(x - s * 0.85, y + s * 0.5, x + s * 0.85, y + s * 0.65, ink);
+        }
+        Kind::Church => {
+            g.rect(x - s * 0.55, y - s * 0.1, x + s * 0.55, y + s * 0.65, red);
+            g.circle(x, y - s * 0.1, s * 0.5, 16, red);
+            g.rect(x - s * 0.06, y - s * 0.9, x + s * 0.06, y - s * 0.5, ink);
+            g.rect(x - s * 0.2, y - s * 0.78, x + s * 0.2, y - s * 0.68, ink);
+        }
+        Kind::Market => {
+            for k in 0..3 {
+                let cx = x - s * 0.55 + k as f32 * s * 0.55;
+                g.tri(
+                    (cx - s * 0.3, y - s * 0.05),
+                    (cx + s * 0.3, y - s * 0.05),
+                    (cx, y - s * 0.45),
+                    if k == 1 { blue } else { red },
+                );
+                g.rect(cx - s * 0.24, y - s * 0.05, cx + s * 0.24, y + s * 0.5, ink);
+            }
+        }
+        Kind::Gate => {
+            g.rect(x - s * 0.9, y - s * 0.3, x + s * 0.9, y + s * 0.6, ink);
+            g.rect(
+                x - s * 0.3,
+                y + s * 0.05,
+                x + s * 0.3,
+                y + s * 0.6,
+                [0.97, 0.93, 0.83, 1.],
+            );
+            g.tri(
+                (x - s, y - s * 0.3),
+                (x + s, y - s * 0.3),
+                (x, y - s * 0.75),
+                red,
+            );
+        }
+        Kind::Forum => {
+            g.rect(x - s * 0.9, y + s * 0.45, x + s * 0.9, y + s * 0.6, ink);
+            for k in 0..3 {
+                let cx = x - s * 0.6 + k as f32 * s * 0.6;
+                g.rect(cx - s * 0.1, y - s * 0.4, cx + s * 0.1, y + s * 0.45, ink);
+            }
+            g.rect(x - s * 0.9, y - s * 0.55, x + s * 0.9, y - s * 0.4, ink);
+        }
+        Kind::Theater => {
+            g.ring(x, y + s * 0.3, s * 0.85, s * 0.35, 20, ink);
+            g.rect(
+                x - s,
+                y + s * 0.3,
+                x + s,
+                y + s * 0.95,
+                [0.97, 0.93, 0.83, 1.],
+            );
+            g.rect(x - s * 0.7, y + s * 0.3, x + s * 0.7, y + s * 0.45, red);
+        }
+        Kind::House => {
+            g.rect(
+                x - s * 0.6,
+                y - s * 0.05,
+                x + s * 0.6,
+                y + s * 0.6,
+                [0.62, 0.45, 0.28, 1.],
+            );
+            g.tri(
+                (x - s * 0.85, y - s * 0.05),
+                (x + s * 0.85, y - s * 0.05),
+                (x, y - s * 0.65),
+                red,
+            );
+            g.rect(x - s * 0.12, y + s * 0.2, x + s * 0.12, y + s * 0.6, ink);
+        }
+        Kind::Bridge => {
+            g.rect(x - s, y + s * 0.25, x + s, y + s * 0.6, blue);
+            g.rect(x - s, y - s * 0.15, x + s, y + s * 0.05, ink);
+            for k in 0..3 {
+                let cx = x - s * 0.6 + k as f32 * s * 0.6;
+                g.rect(cx - s * 0.08, y, cx + s * 0.08, y + s * 0.45, ink);
+            }
+        }
+        Kind::Hill => {
+            g.tri(
+                (x - s, y + s * 0.6),
+                (x + s * 0.2, y + s * 0.6),
+                (x - s * 0.4, y - s * 0.3),
+                [0.45, 0.55, 0.30, 1.],
+            );
+            g.tri(
+                (x - s * 0.3, y + s * 0.6),
+                (x + s, y + s * 0.6),
+                (x + s * 0.35, y - s * 0.6),
+                [0.36, 0.46, 0.24, 1.],
+            );
+        }
+        Kind::Castle => {
+            g.rect(
+                x - s * 0.9,
+                y + s * 0.3,
+                x + s * 0.9,
+                y + s * 0.6,
+                [0.55, 0.52, 0.48, 1.],
+            );
+            g.rect(
+                x - s * 0.5,
+                y - s * 0.1,
+                x + s * 0.5,
+                y + s * 0.3,
+                [0.95, 0.95, 0.92, 1.],
+            );
+            g.tri(
+                (x - s * 0.75, y - s * 0.1),
+                (x + s * 0.75, y - s * 0.1),
+                (x, y - s * 0.45),
+                ink,
+            );
+            g.rect(
+                x - s * 0.3,
+                y - s * 0.55,
+                x + s * 0.3,
+                y - s * 0.3,
+                [0.95, 0.95, 0.92, 1.],
+            );
+            g.tri(
+                (x - s * 0.5, y - s * 0.5),
+                (x + s * 0.5, y - s * 0.5),
+                (x, y - s * 0.85),
+                ink,
+            );
+        }
+        Kind::Fortress => {
+            g.rect(
+                x - s * 0.8,
+                y - s * 0.3,
+                x + s * 0.8,
+                y + s * 0.6,
+                [0.48, 0.44, 0.40, 1.],
+            );
+            for k in 0..4 {
+                let cx = x - s * 0.7 + k as f32 * s * 0.46;
+                g.rect(
+                    cx - s * 0.12,
+                    y - s * 0.55,
+                    cx + s * 0.12,
+                    y - s * 0.3,
+                    [0.48, 0.44, 0.40, 1.],
+                );
+            }
+            g.rect(x - s * 0.2, y + s * 0.15, x + s * 0.2, y + s * 0.6, ink);
+        }
+        Kind::Hall => {
+            g.rect(
+                x - s * 0.85,
+                y - s * 0.2,
+                x + s * 0.85,
+                y + s * 0.6,
+                [0.70, 0.58, 0.42, 1.],
+            );
+            g.rect(x - s * 0.95, y - s * 0.4, x + s * 0.95, y - s * 0.2, ink);
+            for k in 0..3 {
+                let cx = x - s * 0.5 + k as f32 * s * 0.5;
+                g.rect(
+                    cx - s * 0.12,
+                    y,
+                    cx + s * 0.12,
+                    y + s * 0.35,
+                    [0.30, 0.42, 0.55, 1.],
+                );
+            }
+        }
+        Kind::Water => {
+            g.circle(x, y + s * 0.15, s * 0.75, 18, blue);
+            g.line(
+                (x - s * 0.45, y + s * 0.05),
+                (x + s * 0.1, y + s * 0.05),
+                1.6,
+                [0.9, 0.96, 1., 1.],
+            );
+            g.line(
+                (x - s * 0.1, y + s * 0.4),
+                (x + s * 0.45, y + s * 0.4),
+                1.6,
+                [0.9, 0.96, 1., 1.],
+            );
+        }
+    }
+    let _ = INK;
+    let _ = INK_SOFT;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run(g: &mut Game, secs: f32) {
+        let mut t = 0.;
+        while t < secs {
+            g.frame(&[], 0.05, true);
+            t += 0.05;
+        }
+    }
+
     #[test]
     fn journal_roundtrip_and_corruption() {
         let mut j = Journal::new();
-        j.photos.push(Photo {
-            event: 4,
-            heading: 15.,
-            zoom: 1.2,
-            time: 4.,
-            quality: 3,
-        });
+        j.era = EDO;
+        j.place = 3;
+        j.visited[EDO] = true;
+        j.met[5] = true;
+        j.seen[7] = true;
+        j.treasures[2] = true;
         let b = j.bytes();
-        let r = Journal::read(&b).unwrap();
-        assert_eq!(r.photos, j.photos);
-        assert_eq!(r.year, -221);
+        assert_eq!(Journal::read(&b).unwrap(), j);
         for n in 0..b.len() {
             assert!(Journal::read(&b[..n]).is_err());
         }
         let mut bad = b.clone();
-        bad[20] ^= 1;
+        bad[14] ^= 1;
         assert!(Journal::read(&bad).is_err());
     }
+
     #[test]
-    fn every_event_can_be_visited_photographed_and_restored() {
+    fn every_person_and_event_can_be_found() {
         let mut g = Game::new(Gfx::new(1600, 900));
-        for i in 0..EVENTS.len() {
-            g.act(Act::Select(i));
-            g.act(Act::Visit);
-            assert_eq!(g.mode, Mode::Aerial);
-            g.act(Act::Street);
-            g.act(Act::Capture);
-            assert!(g.found(i));
+        for era in 0..ERAS.len() {
+            g.act(Act::PickEra(era));
+            g.act(Act::Shift(era, None));
+            assert_eq!(g.mode, Mode::Shift);
+            run(&mut g, 2.);
+            assert_eq!(g.mode, Mode::Field);
+            assert_eq!(g.journal.era, era);
+            for place in 0..ERAS[era].places.len() {
+                g.act(Act::Goto(place));
+                run(&mut g, 12.);
+                assert!(g.travel.is_none());
+                assert_eq!(g.journal.place, place);
+                for i in g.people_here() {
+                    g.act(Act::Meet(i));
+                    assert_eq!(g.overlay, Overlay::Meet(i, 0));
+                    for _ in 0..PEOPLE[i].lines.len() {
+                        g.render();
+                        g.act(Act::Next);
+                    }
+                    assert!(matches!(g.overlay, Overlay::None | Overlay::TrialIntro(_)));
+                }
+                for i in g.events_here() {
+                    g.act(Act::Observe(i));
+                    g.render();
+                    g.act(Act::Close);
+                }
+                if !g.era_complete(era) {
+                    assert_eq!(g.overlay, Overlay::None, "trial only after everything");
+                }
+            }
+            // 情報がそろうと試練が始まる
+            assert!(g.era_complete(era));
+            assert_eq!(g.overlay, Overlay::TrialIntro(era));
+            g.render();
+            pass_trial(&mut g, era, true);
+            assert!(g.journal.treasures[era]);
+            g.act(Act::Close);
         }
-        assert_eq!(g.journal.photos.len(), EVENTS.len());
+        assert!(g.journal.treasures.iter().all(|t| *t));
+        assert!(g.journal.met.iter().all(|m| *m));
+        assert!(g.journal.seen.iter().all(|m| *m));
+        assert!(g.journal.visited.iter().all(|m| *m));
         let b = g.journal.bytes();
         g.journal = Journal::new();
         g.apply_loaded(&b);
-        assert_eq!(g.journal.photos.len(), EVENTS.len());
-        for r in 1..REGIONS.len() {
-            g.act(Act::Region(r));
-            assert!(g
-                .album_events()
-                .iter()
-                .all(|i| EVENTS[g.journal.photos[*i].event].region == r));
+        assert_eq!(g.met_count(None), PEOPLE.len());
+        assert_eq!(g.seen_count(None), EVENTS.len());
+    }
+
+    /// 試練を最後まで答える（perfect=false なら一問だけ間違える）
+    fn pass_trial(g: &mut Game, era: usize, perfect: bool) {
+        g.act(Act::Begin(era));
+        let n = quizzes(era).len();
+        for q in 0..n {
+            assert!(matches!(g.overlay, Overlay::Trial(e, k, None, _) if e == era && k == q));
+            g.render();
+            let quiz = &QUIZZES[quizzes(era)[q]];
+            let k = if !perfect && q == 2 {
+                (quiz.answer + 1) % 4
+            } else {
+                quiz.answer
+            };
+            g.handle(Ev::Key(49 + k as u32, true));
+            g.render();
+            g.act(Act::Next);
         }
+        let score = if perfect { n } else { n - 1 };
+        assert_eq!(g.overlay, Overlay::TrialResult(era, score));
+        g.render();
     }
+
     #[test]
-    fn camera_requires_scene_and_composition() {
+    fn trial_needs_everything_and_a_perfect_score() {
         let mut g = Game::new(Gfx::new(1600, 900));
-        g.capture();
-        assert!(g.journal.photos.is_empty());
-        g.act(Act::Visit);
-        g.act(Act::Street);
-        g.heading = 100.;
-        g.capture();
-        assert!(g.journal.photos.is_empty());
-        g.heading = 0.;
-        g.capture();
-        assert_eq!(g.journal.photos[0].quality, 3);
-        g.heading = 60.;
-        g.capture();
-        assert_eq!(g.journal.photos.len(), 1);
-        assert_eq!(g.journal.photos[0].quality, 3);
+        g.act(Act::Shift(EDO, None));
+        run(&mut g, 2.);
+        g.act(Act::TrialIntro(EDO));
+        assert_eq!(g.overlay, Overlay::None);
+        g.act(Act::Begin(EDO));
+        assert_eq!(g.overlay, Overlay::None);
+        for (i, p) in PEOPLE.iter().enumerate() {
+            g.journal.met[i] |= p.era == EDO;
+        }
+        for (i, e) in EVENTS.iter().enumerate() {
+            g.journal.seen[i] |= e.era == EDO;
+        }
+        g.act(Act::Close);
+        assert_eq!(g.overlay, Overlay::TrialIntro(EDO));
+        // 一問でも間違えると秘宝は手に入らない
+        pass_trial(&mut g, EDO, false);
+        assert!(!g.journal.treasures[EDO]);
+        // 一度閉じても、また自動では始まらない。欄のボタンから挑み直せる
+        g.act(Act::Close);
+        assert_eq!(g.overlay, Overlay::None);
+        g.act(Act::TrialIntro(EDO));
+        pass_trial(&mut g, EDO, true);
+        assert!(g.journal.treasures[EDO]);
+        assert_eq!(g.treasure_count(), 1);
+        g.act(Act::Close);
+        g.render();
+        g.act(Act::Codex);
+        g.act(Act::Tab(Tab::Treasures));
+        g.render();
+        g.act(Act::Treasure(EDO));
+        g.render();
+        g.act(Act::Treasure(ROME));
+        g.render();
+        // 秘宝は保存される
+        let b = g.journal.bytes();
+        let j = Journal::read(&b).unwrap();
+        assert!(j.treasures[EDO] && !j.treasures[ROME]);
     }
+
     #[test]
-    fn all_views_render_and_search_input_works() {
-        for (w, h, c) in [(1600, 900, false), (900, 420, true)] {
+    fn reads_saves_without_treasures() {
+        let mut j = Journal::new();
+        j.met[3] = true;
+        j.visited[1] = true;
+        let mut b = j.bytes();
+        b.truncate(b.len() - 4);
+        b[..8].copy_from_slice(MAGIC_V2);
+        b.remove(11);
+        let hash = checksum(&b);
+        b.extend_from_slice(&hash.to_le_bytes());
+        assert_eq!(Journal::read(&b).unwrap(), j);
+    }
+
+    #[test]
+    fn meeting_requires_being_there() {
+        let mut g = Game::new(Gfx::new(1600, 900));
+        let caesar = person_index("caesar").unwrap();
+        g.act(Act::Meet(caesar));
+        assert!(!g.journal.met[caesar]);
+        g.act(Act::Shift(ROME, None));
+        run(&mut g, 2.);
+        g.act(Act::Meet(caesar));
+        assert!(
+            !g.journal.met[caesar],
+            "Caesar is at the Domus Publica, not the Forum"
+        );
+        let ides = event_index("ides").unwrap();
+        g.act(Act::Observe(ides));
+        assert!(!g.journal.seen[ides]);
+        let domus = place_index(ROME, "domus").unwrap();
+        g.act(Act::Goto(domus));
+        g.frame(&[], 0.05, true);
+        g.act(Act::Meet(caesar));
+        assert!(!g.journal.met[caesar], "cannot meet while travelling");
+        run(&mut g, 10.);
+        g.act(Act::Meet(caesar));
+        assert!(g.journal.met[caesar]);
+    }
+
+    #[test]
+    fn arrow_keys_follow_roads() {
+        let mut g = Game::new(Gfx::new(1600, 900));
+        g.act(Act::Shift(ROME, None));
+        run(&mut g, 2.);
+        // フォルムから西へ：ポンペイウス劇場（道でつながる）かカピトリウム
+        g.handle(Ev::Key(37, true));
+        run(&mut g, 10.);
+        let id = ERAS[ROME].places[g.journal.place].id;
+        assert!(id == "capitol" || id == "pompey", "{id}");
+    }
+
+    #[test]
+    fn all_views_render_and_search_filters() {
+        for (w, h, c) in [(1600, 900, false), (1360, 720, false), (900, 420, true)] {
             let mut g = Game::new(Gfx::new(w, h));
             g.gfx.set_compact(c);
-            for r in 0..REGIONS.len() {
-                g.act(Act::Region(r));
-                for m in [Mode::Map, Mode::Aerial, Mode::Street, Mode::Album] {
-                    g.mode = m;
+            g.frame(&[], 0.016, true);
+            for era in 0..ERAS.len() {
+                g.act(Act::Shift(era, None));
+                run(&mut g, 2.);
+                g.frame(&[], 0.016, true);
+            }
+            g.act(Act::Codex);
+            for t in [Tab::People, Tab::Timeline, Tab::Events, Tab::Treasures] {
+                g.act(Act::Tab(t));
+                for f in std::iter::once(None).chain((0..ERAS.len()).map(Some)) {
+                    g.act(Act::Filter(f));
                     g.frame(&[], 0.016, true);
                 }
-                g.mode = Mode::Street;
-                g.capture();
-                g.mode = Mode::Album;
-                g.render();
-                g.preview = Some(0);
-                g.render();
-                g.preview = None;
             }
-            g.help = true;
+            g.act(Act::Detail(Entry::Person(0)));
             g.render();
+            g.act(Act::Detail(Entry::Event(0)));
+            g.render();
+            g.act(Act::Help);
+            g.render();
+            g.act(Act::Close);
+            // 検索は発見済みの項目だけが対象
+            g.act(Act::Filter(None));
             g.searching = true;
-            g.handle(Ev::Char('秦'));
-            g.journal.region = 1;
-            assert_eq!(g.filtered().len(), 1);
+            for ch in "カエサル".chars() {
+                g.handle(Ev::Char(ch));
+            }
+            assert_eq!(
+                (0..PEOPLE.len())
+                    .filter(|i| g.codex_match_person(*i))
+                    .count(),
+                0
+            );
+            g.act(Act::Reveal);
+            assert!(
+                (0..PEOPLE.len())
+                    .filter(|i| g.codex_match_person(*i))
+                    .count()
+                    >= 1
+            );
+            assert!(
+                (0..EVENTS.len())
+                    .filter(|i| g.codex_match_event(*i))
+                    .count()
+                    >= 1
+            );
             g.handle(Ev::Key(8, true));
-            assert!(g.query.is_empty());
+            assert_eq!(g.query.chars().count(), 3);
         }
+    }
+
+    #[test]
+    fn polygons_triangulate() {
+        for era in ERAS {
+            for f in era.features {
+                if let Feature::Water(p) | Feature::Land(p) = f {
+                    assert_eq!(triangulate(p).len(), p.len() - 2, "{}", era.id);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chronology_is_ordered() {
+        let c = chronology();
+        assert!(c.windows(2).all(|w| event_key(w[0]) <= event_key(w[1])));
+        assert_eq!(EVENTS[c[0]].id, "lupercalia");
     }
 }

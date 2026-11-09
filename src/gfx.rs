@@ -49,6 +49,9 @@ pub enum Font {
 pub struct GfxError;
 pub type Result<T> = std::result::Result<T, GfxError>;
 
+/// 画像ファイルから読み込んだ絵（ブラウザが非同期に読み込む）
+pub type Image = u32;
+
 pub struct Gfx {
     /// 実ピクセル寸法
     pw: u32,
@@ -64,6 +67,8 @@ pub struct Gfx {
     pub d2d_gen: u32,
     /// スマートフォン向けに詰めた画面（UI を約 1000×470 に収める）
     pub compact: bool,
+    /// 画像のパス → ブラウザ側の番号
+    images: std::collections::HashMap<String, u32>,
 }
 
 pub fn col(r: f32, g: f32, b: f32, a: f32) -> [f32; 4] {
@@ -83,6 +88,7 @@ impl Gfx {
             xform: [1.0, 1.0, 0.0, 0.0],
             d2d_gen: 1,
             compact: false,
+            images: std::collections::HashMap::new(),
         };
         g.update_scale();
         g.reload_fonts();
@@ -455,6 +461,64 @@ impl Gfx {
         #[cfg(target_arch = "wasm32")]
         unsafe {
             js::js_2d_end()
+        }
+    }
+
+    /// 以降の文字・UI の描画を矩形の中に限る（clip_end と対で使う）
+    pub fn clip_begin(&self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        #[cfg(target_arch = "wasm32")]
+        unsafe {
+            js::js_clip(x0, y0, x1, y1)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = (x0, y0, x1, y1);
+    }
+
+    /// 角を丸めた矩形で切り抜く（clip_end と対で使う）
+    pub fn clip_round(&self, x0: f32, y0: f32, x1: f32, y1: f32, r: f32) {
+        #[cfg(target_arch = "wasm32")]
+        unsafe {
+            js::js_clip_round(x0, y0, x1, y1, r)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = (x0, y0, x1, y1, r);
+    }
+
+    /// assets/images/ の画像。読み込みが済んでいなければ（または無ければ）None
+    pub fn image(&mut self, path: &str) -> Option<Image> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let id = match self.images.get(path) {
+                Some(id) => *id,
+                None => {
+                    let url = format!("images/{path}");
+                    let id = unsafe { js::js_img_load(url.as_ptr(), url.len()) };
+                    self.images.insert(path.to_string(), id);
+                    id
+                }
+            };
+            return (unsafe { js::js_img_ready(id) } != 0).then_some(id);
+        }
+        #[allow(unreachable_code)]
+        {
+            let _ = (path, &self.images);
+            None
+        }
+    }
+
+    pub fn draw_image(&self, img: &Image, x0: f32, y0: f32, x1: f32, y1: f32, alpha: f32) {
+        #[cfg(target_arch = "wasm32")]
+        unsafe {
+            js::js_img_draw(*img, x0, y0, x1, y1, alpha)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = (img, x0, y0, x1, y1, alpha);
+    }
+
+    pub fn clip_end(&self) {
+        #[cfg(target_arch = "wasm32")]
+        unsafe {
+            js::js_unclip()
         }
     }
 

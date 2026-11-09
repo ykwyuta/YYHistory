@@ -1,5 +1,5 @@
 import { createNarrator, bindNarratorGestures } from './speech.mjs';
-// 歴史写真帳 — ブラウザ側のつなぎ目
+// YYHistory — ブラウザ側のつなぎ目
 // Rust（WebAssembly）の描画命令を WebGL2 と Canvas2D に、ブラウザの入力を Rust に渡す。
 
 const glCanvas = document.getElementById('gl');
@@ -24,7 +24,7 @@ const FAMILIES = [
 ];
 const LANG_CODES = ['ja', 'en', 'zh'];
 const DISPLAY_FAMILIES = ['"Yu Mincho", "Noto Serif JP", serif', 'Georgia, "Times New Roman", serif', '"Noto Serif SC", "SimSun", serif'];
-const TITLES = ['YYHistory — 時を歩く、歴史を撮る', 'YYHistory — 時を歩く、歴史を撮る', 'YYHistory — 時を歩く、歴史を撮る'];
+const TITLES = ['YYHistory — 時空を渡り、歴史に出会う', 'YYHistory — 時空を渡り、歴史に出会う', 'YYHistory — 時空を渡り、歴史に出会う'];
 const LANG_KEY = 'yyhistory.lang';
 // 起動時の言語：URL の ?lang=、保存した設定、ブラウザの言語の順
 function detectLang() {
@@ -145,6 +145,7 @@ const textures = [null];
 // ------------------------------------------------------------------ Canvas2D（Direct2D / DirectWrite 相当）
 const ctx = uiCanvas.getContext('2d');
 const bitmaps = [];
+const images = [];
 const colorCache = new Map();
 function css(r, g, b, a) {
   const k = ((r * 255) | 0) * 16777216 + ((g * 255) | 0) * 65536 + ((b * 255) | 0) * 256 + ((Math.min(1, Math.max(0, a)) * 255) | 0);
@@ -163,6 +164,7 @@ const measureCache = new Map();
 const wrapCache = new Map();
 let curFont = -1;
 let curUi = 1;
+let searchUi = 1;
 function setFont(f) {
   if (curFont !== f) {
     ctx.font = fontCss[f];
@@ -360,7 +362,7 @@ const env = {
   },
   js_load: (slot) => {
     storeGet(slot)
-      .then((rec) => (rec ? deliver(rec.data) : notify(T('この枠には記録がない', 'This slot is empty', '此栏位没有存档'))))
+      .then((rec) => rec && deliver(rec.data))
       .catch((e) => notify(T('読み込めなかった：', 'Could not load: ', '无法读取：') + e));
   },
   js_slot_info: (slot, out, cap) => {
@@ -431,11 +433,7 @@ const env = {
     ctx.setTransform(ui, 0, 0, ui, 0, 0);
     curUi = ui;
     const cssUi=ui*uiCanvas.clientWidth/uiCanvas.width;
-    historySearch.style.left=`calc(var(--sl) + ${18*cssUi}px)`;
-    historySearch.style.top=`calc(var(--st) + ${127*cssUi}px)`;
-    historySearch.style.width=`${((compact?270:310)-36)*cssUi}px`;
-    historySearch.style.height=`${39*cssUi}px`;
-    historySearch.style.font=`${14*cssUi}px ${FAMILY}`;
+    searchUi=cssUi;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.globalAlpha = 1;
@@ -477,6 +475,41 @@ const env = {
     ctx.beginPath();
     ctx.arc(x, y, Math.max(0, rad), 0, Math.PI * 2);
     ctx.stroke();
+  },
+  js_clip: (x0, y0, x1, y1) => {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x0, y0, x1 - x0, y1 - y0);
+    ctx.clip();
+  },
+  js_clip_round: (x0, y0, x1, y1, r) => {
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(x0, y0, x1 - x0, y1 - y0, r);
+    ctx.clip();
+  },
+  // 画像ファイル（無ければ読み込みに失敗したまま、ゲームは画像なしの絵を描く）
+  js_img_load: (p, l) => {
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = str(p, l);
+    images.push(img);
+    return images.length - 1;
+  },
+  js_img_ready: (id) => {
+    const img = images[id];
+    return img && img.complete && img.naturalWidth > 0 ? 1 : 0;
+  },
+  js_img_draw: (id, x0, y0, x1, y1, alpha) => {
+    const img = images[id];
+    if (!img || !img.complete || !img.naturalWidth || alpha <= 0) return;
+    ctx.globalAlpha = Math.min(1, alpha);
+    ctx.drawImage(img, x0, y0, x1 - x0, y1 - y0);
+    ctx.globalAlpha = 1;
+  },
+  js_unclip: () => {
+    ctx.restore();
+    curFont = -1;
   },
   js_text: (p, l, x, y, w, h, f, r, g, b, a) => {
     const s = str(p, l);
@@ -1028,7 +1061,7 @@ async function main() {
   wasm = exports;
   document.fonts.addEventListener?.('loadingdone', clearTextCaches);
   fit();
-  loadingMsg.textContent = T('歴史地図を準備中…', 'Preparing the history atlas…', '正在准备历史地图…');
+  loadingMsg.textContent = T('時空転移の準備中…', 'Preparing the history atlas…', '正在准备历史地图…');
   await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
   compact = isCompact();
   wasm.yy_init(pw, ph, compact ? 1 : 0);
@@ -1042,7 +1075,16 @@ async function main() {
     try {
       checkSize();
       wasm.yy_frame(dt, document.hasFocus() && pointerInside ? 1 : 0);
-      historySearch.style.display=wasm.yy_search_visible()?'block':'none';
+      const shown=wasm.yy_search_visible();
+      historySearch.style.display=shown?'block':'none';
+      if(shown){
+        const u=searchUi;
+        historySearch.style.left=`calc(var(--sl) + ${wasm.yy_search_box(0)*u}px)`;
+        historySearch.style.top=`calc(var(--st) + ${wasm.yy_search_box(1)*u}px)`;
+        historySearch.style.width=`${wasm.yy_search_box(2)*u}px`;
+        historySearch.style.height=`${wasm.yy_search_box(3)*u}px`;
+        historySearch.style.font=`${14*u}px ${FAMILY}`;
+      }
     } catch (e) {
       console.error(e);
       showError(String(e && e.stack ? e.stack : e));
