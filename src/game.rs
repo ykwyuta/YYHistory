@@ -138,6 +138,8 @@ enum Act {
     StorySkip,
     TipsOff,
     Replay,
+    /// ことばメモのページ送り
+    MemoPage(i32),
 }
 
 struct Button {
@@ -396,6 +398,12 @@ pub struct Game {
     spoke_at: f32,
     /// いま開いている枠（🔊 ボタンを置く）
     card_rect: Option<[f32; 4]>,
+    /// ことばメモの何語目を見ているか（どの画面のメモか）
+    memo_page: usize,
+    memo_for: Overlay,
+    memo_len: usize,
+    /// ページを送ったら、その用語を読み上げる
+    memo_turned: bool,
     voice: bool,
     dirty: bool,
     save_in: f32,
@@ -449,6 +457,10 @@ impl Game {
             last_tip: None,
             spoke_at: -1.,
             card_rect: None,
+            memo_page: 0,
+            memo_for: Overlay::None,
+            memo_len: 0,
+            memo_turned: false,
             voice: platform::voice_enabled(),
             dirty: false,
             save_in: 0.,
@@ -930,6 +942,13 @@ impl Game {
                 }
             }
             Act::Replay => self.replay(),
+            Act::MemoPage(d) => {
+                if self.memo_len > 0 {
+                    let n = self.memo_len as i32;
+                    self.memo_page = (self.memo_page as i32 + d).rem_euclid(n) as usize;
+                    self.memo_turned = true;
+                }
+            }
             Act::Story(page) => self.open_story(page),
             Act::StoryBack => {
                 if let Overlay::Story(page) = self.overlay {
@@ -1442,6 +1461,8 @@ impl Game {
                 self.overlay,
                 Overlay::Title | Overlay::Story(_) | Overlay::Restore(_)
             )
+            // スマートフォンでは通知が上に出るので、枠の見出しに重ねない
+            && !(self.gfx.compact && self.overlay != Overlay::None)
         {
             let tw = (w * 0.55).min(640.);
             let tx = (w - tw) / 2.;
@@ -2565,7 +2586,7 @@ impl Game {
         let head = if compact { 150. } else { 170. };
         let lh = (self.gfx.measure_h(line, Font::Big, cw0 - 92.) + 48.).max(96.);
         let mh = self.memo_h(&terms, cw0 - 48.);
-        let need = head + lh + if mh > 0. { mh + 12. } else { 0. } + 96.;
+        let need = head + lh + if mh > 0. { mh + 12. } else { 0. } + 60.;
         let [x, y, cw, ch] = self.card(860., need);
         let mr = if compact { 44. } else { 58. };
         self.medallion(
@@ -2592,7 +2613,7 @@ impl Game {
         self.text(p.role, tx, y + 96., tw, 20., Font::Normal, CYAN);
         // 言葉とことばメモ（入りきらなければ、なぞって読む）
         let by = y + head;
-        let view_h = ch - head - 96.;
+        let view_h = ch - head - 60.;
         self.scroll_areas
             .push(([x, by, cw, view_h], Scroll::Overlay));
         let off = self.scroll[Scroll::Overlay as usize];
@@ -2622,10 +2643,6 @@ impl Game {
         self.gfx.clip_end();
         self.scroll_max[Scroll::Overlay as usize] =
             lh + if mh > 0. { mh + 12. } else { 0. } - view_h;
-        self.text(
-            "※人物の言葉は、史料に基づく事実を本人の語りとして再構成したものです。「」内の史料の引用を除き、実際の発言ではありません。",
-            x + 26., y + ch - 84., cw - 52., 34., Font::Small, MUTED,
-        );
         let last = page + 1 >= p.lines.len();
         self.button(
             "詳しく（図鑑）",
@@ -2652,7 +2669,7 @@ impl Game {
     /// 出来事の場面の高さ（画像が無ければ0）
     fn banner_h(&mut self, i: usize, tw: f32) -> f32 {
         if self.gfx.image(&images::event(EVENTS[i].id)).is_some() {
-            (tw * 9. / 16.).min(320.) + 12.
+            (tw * 9. / 16.).min(320.).min(self.gfx.height as f32 * 0.32) + 12.
         } else {
             0.
         }
@@ -2663,7 +2680,7 @@ impl Game {
         let Some(img) = self.gfx.image(&images::event(EVENTS[i].id)) else {
             return 0.;
         };
-        let h = (tw * 9. / 16.).min(320.);
+        let h = (tw * 9. / 16.).min(320.).min(self.gfx.height as f32 * 0.32);
         cover(&mut self.gfx, &img, [x, y, tw, h], 16. / 9., 1.);
         self.gfx
             .stroke_rect(x, y, x + tw, y + h, 1., alpha(GOLD, 0.6));
@@ -4987,9 +5004,44 @@ mod tests {
             }
             g.act(Act::Answer(QUIZZES[quizzes(ROME)[q]].answer));
             g.render();
+            // ことばメモは1語ずつ。「つぎ」で送ると、その語も覚える
+            for _ in 0..g.memo_len {
+                g.act(Act::MemoPage(1));
+                g.render();
+            }
             g.act(Act::TrialNext);
         }
         assert!(g.journal.terms[julian]);
+    }
+
+    /// ことばメモはスマートフォンでも1語ずつ収まり、ページを送って読める
+    #[test]
+    fn word_memo_pages_one_term_at_a_time() {
+        let mut g = game(Gfx::new(844, 390));
+        g.gfx.set_compact(true);
+        g.act(Act::Shift(ROME, None));
+        run(&mut g, warp::SHIFT_SECS + 0.2);
+        g.act(Act::Observe(event_index("lupercalia").unwrap()));
+        g.render();
+        assert!(g.memo_len >= 3);
+        let first = g.memo_page;
+        assert!(g.buttons.iter().any(|b| matches!(b.act, Act::MemoPage(1))));
+        g.act(Act::MemoPage(1));
+        g.render();
+        assert_eq!(g.memo_page, first + 1);
+        assert!(g.last_speech.contains("。"), "the new term is read aloud");
+        g.act(Act::MemoPage(-1));
+        g.act(Act::MemoPage(-1));
+        assert_eq!(g.memo_page, g.memo_len - 1, "wraps around");
+        // 別の画面では1語目から
+        g.act(Act::Close);
+        g.act(Act::Observe(event_index("funeral").unwrap()));
+        g.render();
+        assert_eq!(g.memo_page, 0);
+        // 1語だけの高さは、スマートフォンの画面に収まる
+        let terms = glossary::find(&EVENTS[event_index("lupercalia").unwrap()].body.join(""));
+        let w = g.gfx.width as f32 - 92.;
+        assert!(g.memo_h(&terms, w) < g.gfx.height as f32 * 0.5);
     }
 
     /// 読み上げる文の熟語は、すべて読み辞書（src/speech_ja.tsv）でかなに直る

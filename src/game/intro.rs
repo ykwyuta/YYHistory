@@ -960,24 +960,38 @@ impl Game {
 
 // ------------------------------------------------------------------ クロノのことばメモ
 impl Game {
-    /// ことばメモの高さ（用語が無ければ0）
+    /// ことばメモの高さ（用語が無ければ0）。一度に1語ずつ見せるので、いちばん長い説明に合わせる
     pub(super) fn memo_h(&mut self, terms: &[usize], w: f32) -> f32 {
         if terms.is_empty() {
             return 0.;
         }
         let tw = w - 92.;
-        let mut h = 38.;
-        for &i in terms {
-            h += 24. + self.gfx.measure_h(glossary::TERMS[i].kid, Font::Normal, tw) + 8.;
-        }
-        h + 4.
+        let tallest = terms
+            .iter()
+            .map(|&i| self.gfx.measure_h(glossary::TERMS[i].kid, Font::Normal, tw))
+            .fold(0f32, f32::max);
+        let nav = if terms.len() > 1 { 40. } else { 0. };
+        (38. + 24. + tallest + 8. + nav + 4.).max(96.)
     }
 
-    /// クロノが用語をやさしく説明する。描いた高さを返す。説明した用語は図鑑の「ことば」に残る
+    /// クロノが用語をやさしく説明する（1語ずつページ送り）。描いた高さを返す。
+    /// 見せた用語は図鑑の「ことば」に残る
     pub(super) fn memo(&mut self, terms: &[usize], x: f32, y: f32, w: f32) -> f32 {
         let h = self.memo_h(terms, w);
         if h == 0. {
             return 0.;
+        }
+        // 別の画面・別のページに変わったら、1語目から
+        if self.memo_for != self.overlay || self.memo_len != terms.len() {
+            self.memo_for = self.overlay;
+            self.memo_page = 0;
+        }
+        self.memo_len = terms.len();
+        let k = self.memo_page.min(terms.len() - 1);
+        let i = terms[k];
+        if std::mem::take(&mut self.memo_turned) {
+            let t = &glossary::TERMS[i];
+            self.say(format!("{}。{}", t.kana, t.kid));
         }
         self.gfx
             .fill_round(x, y, x + w, y + h, 12., [0.98, 0.96, 0.89, 0.97]);
@@ -994,25 +1008,43 @@ impl Game {
             [0.15, 0.45, 0.60, 1.],
         );
         let tw = w - 92.;
-        let mut yy = y + 36.;
-        let mut learned = false;
-        for &i in terms {
-            let t = &glossary::TERMS[i];
+        let t = &glossary::TERMS[i];
+        self.text(
+            &format!("{}（{}）", t.name(), t.kana),
+            x + 76.,
+            y + 36.,
+            tw,
+            22.,
+            Font::Big,
+            INK,
+        );
+        let eh = self.gfx.measure_h(t.kid, Font::Normal, tw);
+        self.text(t.kid, x + 76., y + 60., tw, eh, Font::Normal, INK_SOFT);
+        if terms.len() > 1 {
+            let ny = y + h - 40.;
+            self.button(
+                "‹ まえ",
+                [x + w - 236., ny, 84., 30.],
+                Act::MemoPage(-1),
+                false,
+            );
             self.text(
-                &format!("{}（{}）", t.name(), t.kana),
-                x + 76.,
-                yy,
-                tw,
+                &format!("{} / {}", k + 1, terms.len()),
+                x + w - 148.,
+                ny + 4.,
+                56.,
                 22.,
-                Font::Big,
+                Font::NormalCenter,
                 INK,
             );
-            let eh = self.gfx.measure_h(t.kid, Font::Normal, tw);
-            self.text(t.kid, x + 76., yy + 24., tw, eh, Font::Normal, INK_SOFT);
-            yy += 24. + eh + 8.;
-            learned |= !std::mem::replace(&mut self.journal.terms[i], true);
+            self.button(
+                "つぎ ›",
+                [x + w - 92., ny, 84., 30.],
+                Act::MemoPage(1),
+                true,
+            );
         }
-        if learned {
+        if !std::mem::replace(&mut self.journal.terms[i], true) {
             self.change();
         }
         h
