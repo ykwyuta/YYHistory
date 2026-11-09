@@ -3193,7 +3193,10 @@ impl Game {
     /// 図鑑「なぜ？ノート」：クロノに聞いた疑問と答え
     fn codex_words(&mut self, y0: f32, w: f32, vy0: f32, vy1: f32) -> f32 {
         let q = self.query.clone();
-        let items: Vec<usize> = (0..notes::NOTES.len())
+        let mut order: Vec<usize> = (0..notes::NOTES.len()).collect();
+        order.sort_by_key(|i| (notes::era(*i), *i));
+        let items: Vec<usize> = order
+            .into_iter()
             .filter(|i| self.filter.is_none_or(|f| notes::era(*i) == f))
             .filter(|i| {
                 let n = &notes::NOTES[*i];
