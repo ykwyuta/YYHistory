@@ -5,12 +5,13 @@
   "description": "時代と地域を選んで歴史の現場へ転移し、人物に会い出来事を観察する教育ゲーム。YYEarthのRust基盤から派生。",
   "scripts": {
     "build": "node tools/build.mjs",
-    "test": "node --test tools/package_wasm.test.mjs tools/check_images.test.mjs tools/build.test.mjs tools/speech.test.mjs",
+    "test": "node --test tools/package_wasm.test.mjs tools/check_images.test.mjs tools/build.test.mjs tools/speech.test.mjs tools/touch.test.mjs",
     "preview": "python tools/serve.py",
     "images:check": "node tools/check_images.mjs",
     "images:report": "node tools/check_images.mjs --report",
     "images:list": "node -e \"const r=require('child_process').spawnSync('cargo',['test','--lib','--features','headless','images'],{stdio:'inherit',env:{...process.env,UPDATE_IMAGE_MANIFEST:'1'}});process.exit(r.status)\"",
     "test:voice": "node --test tools/speech.test.mjs",
-    "readings:check": "cargo test --lib --features headless every_spoken_compound_has_a_reading"
+    "readings:check": "cargo test --lib --features headless every_spoken_compound_has_a_reading",
+    "test:touch": "node --test tools/touch.test.mjs"
   }
 }

@@ -145,6 +145,13 @@ struct Button {
     act: Act,
 }
 
+#[cfg(test)]
+impl Button {
+    fn clone_rect(&self) -> [f32; 4] {
+        self.rect
+    }
+}
+
 /// 旅の記録（保存される）
 #[derive(Clone, Debug, PartialEq)]
 struct Journal {
@@ -583,14 +590,12 @@ impl Game {
     #[cfg_attr(windows, allow(dead_code))]
     pub fn hit_kind(&self, x: f32, y: f32) -> u32 {
         let (x, y) = (x / self.gfx.ui, y / self.gfx.ui);
-        if self.buttons.iter().any(|b| inside(b.rect, x, y)) {
-            return 1;
-        }
+        // 一覧の項目はボタンだが、一覧の上でなぞればどこでもスクロールする。
+        // 軽く押して離せば、ブラウザ側がタップとして送るので項目を選べる（YYEarth と同じ）
         if self.scroll_areas.iter().any(|(r, _)| inside(*r, x, y)) {
-            3
-        } else {
-            1
+            return 3;
         }
+        1
     }
 
     // -------------------------------------------------------------- 1フレーム
@@ -5066,6 +5071,80 @@ mod tests {
         assert!(g.last_speech.starts_with(PEOPLE[antony].lines[1]));
         g.handle(Ev::Key(0x73, true));
         assert!(g.last_speech.starts_with(PEOPLE[antony].lines[1]));
+    }
+
+    /// 転移先の一覧・図鑑・右の欄：項目の上でもなぞればスクロールし、押せば選べる
+    #[test]
+    fn list_items_accept_swipes_and_taps_at_mobile_scales() {
+        for (w, h, compact) in [(844, 390, true), (1194, 834, true), (1600, 900, false)] {
+            let mut g = game(Gfx::new(w, h));
+            g.gfx.set_compact(compact);
+            let ui = g.gfx.ui;
+            let center = |r: [f32; 4]| ((r[0] + r[2] / 2.) * ui, (r[1] + r[3] / 2.) * ui);
+            let tap = |g: &mut Game, (x, y): (f32, f32)| {
+                g.handle(Ev::MouseMove(x, y));
+                g.handle(Ev::Down(0, x, y));
+                g.handle(Ev::Up(0, x, y));
+            };
+            // 転移先の一覧
+            g.render();
+            let row = g
+                .buttons
+                .iter()
+                .find(|b| matches!(b.act, Act::PickEra(1)) && b.rect[0] < g.atlas_list_w())
+                .unwrap()
+                .rect;
+            let (x, y) = center(row);
+            assert_eq!(g.hit_kind(x, y), 3, "era row at {w}x{h}");
+            if g.scroll_max[Scroll::Atlas as usize] > 0. {
+                g.handle(Ev::MouseMove(x, y));
+                g.handle(Ev::Scroll(-40. * ui));
+                assert!(g.scroll[Scroll::Atlas as usize] > 0.);
+                g.handle(Ev::Scroll(10000.));
+                assert_eq!(g.scroll[Scroll::Atlas as usize], 0.);
+            }
+            tap(&mut g, (x, y));
+            assert_eq!(g.pick, 1);
+            // 上の帯のボタンは、なぞってもスクロールしない
+            let top = g
+                .buttons
+                .iter()
+                .find(|b| matches!(b.act, Act::Codex))
+                .unwrap()
+                .rect;
+            let (tx, ty) = center(top);
+            assert_eq!(g.hit_kind(tx, ty), 1);
+            // 図鑑のカード
+            g.act(Act::Codex);
+            g.render();
+            let card = g
+                .buttons
+                .iter()
+                .find(|b| matches!(b.act, Act::Detail(_)))
+                .unwrap()
+                .clone_rect();
+            let (cx, cy) = center(card);
+            assert_eq!(g.hit_kind(cx, cy), 3, "codex card at {w}x{h}");
+            assert!(g.scroll_max[Scroll::Codex as usize] > 0.);
+            g.handle(Ev::MouseMove(cx, cy));
+            g.handle(Ev::Scroll(-60. * ui));
+            assert!(g.scroll[Scroll::Codex as usize] > 0.);
+            g.handle(Ev::Scroll(100000.));
+            g.render();
+            tap(&mut g, (cx, cy));
+            assert!(matches!(g.overlay, Overlay::Detail(_)));
+            // 図鑑のタブは、なぞってもスクロールしない
+            g.act(Act::Close);
+            g.render();
+            let tab = g
+                .buttons
+                .iter()
+                .find(|b| matches!(b.act, Act::Tab(_)))
+                .unwrap()
+                .rect;
+            let (tx, ty) = center(tab);
+            assert_eq!(g.hit_kind(tx, ty), 1);
+        }
     }
 
     #[test]
