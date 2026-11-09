@@ -120,7 +120,7 @@ impl Game {
 
     // -------------------------------------------------------------- 絵の部品
     /// 星空（時空のあいだ）
-    fn starfield(&mut self, a: f32) {
+    pub(super) fn starfield(&mut self, a: f32) {
         let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
         self.gfx.fill_rect(0., 0., w, h, [0.02, 0.04, 0.10, a]);
         for k in 0..90u32 {

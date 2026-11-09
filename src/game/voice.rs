@@ -211,6 +211,7 @@ impl Game {
             Overlay::Treasure(era) => treasure_speech(era),
             Overlay::Story(page) => story_speech(page),
             Overlay::Title => story_speech(0),
+            Overlay::Briefing(era, page) => briefing::speech(era, page),
             Overlay::Restore(i) => restore_speech(i),
             Overlay::Help | Overlay::None => match self.mode {
                 Mode::Atlas => era_speech(self.pick),
@@ -285,6 +286,11 @@ pub fn all_speech() -> Vec<String> {
     }
     for i in 0..EVENTS.len() {
         v.push(detail_speech(Entry::Event(i)));
+    }
+    for era in 0..ERAS.len() {
+        for page in 0..briefing::pages(era).len() {
+            v.push(briefing::speech(era, page));
+        }
     }
     for page in 0..intro::PAGES.len() {
         v.push(story_speech(page));

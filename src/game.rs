@@ -3,6 +3,7 @@
 //! 世界地図で時代と地域を選んで転移し、その時代の街のミニマップを移動して
 //! 人物に会い、出来事を観察する。出会った人物と観察した出来事は図鑑
 //! （人物一覧表・年表・出来事集）に記録される。
+mod briefing;
 mod intro;
 mod voice;
 mod warp;
@@ -105,6 +106,8 @@ enum Overlay {
     Story(usize),
     /// 時空の復元力のはじめての説明（会った人物）
     Restore(usize),
+    /// クロノの時代の説明（時代, ページ）
+    Briefing(usize, usize),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -140,6 +143,10 @@ enum Act {
     Replay,
     /// ことばメモのページ送り
     MemoPage(i32),
+    /// クロノの時代の説明を読み直す
+    Brief(usize),
+    BriefBack,
+    BriefSkip,
 }
 
 struct Button {
@@ -404,6 +411,8 @@ pub struct Game {
     memo_len: usize,
     /// ページを送ったら、その用語を読み上げる
     memo_turned: bool,
+    /// 時代の説明を読み終えたら転移する先
+    briefing_then: Option<(usize, Option<usize>)>,
     voice: bool,
     dirty: bool,
     save_in: f32,
@@ -461,6 +470,7 @@ impl Game {
             memo_for: Overlay::None,
             memo_len: 0,
             memo_turned: false,
+            briefing_then: None,
             voice: platform::voice_enabled(),
             dirty: false,
             save_in: 0.,
@@ -701,6 +711,16 @@ impl Game {
         }
     }
 
+    /// 転移の演出を始める
+    fn start_shift(&mut self, era: usize, place: Option<usize>) {
+        self.overlay = Overlay::None;
+        self.shift_to = (era, place);
+        self.shift_t = 0.;
+        self.mode = Mode::Shift;
+        self.travel = None;
+        self.hush();
+    }
+
     /// 転移を終えて時代に着く
     fn arrive(&mut self) {
         let (era, place) = self.shift_to;
@@ -851,13 +871,20 @@ impl Game {
                 self.say(voice::era_speech(i));
             }
             Act::Shift(era, place) => {
-                self.overlay = Overlay::None;
-                self.shift_to = (era, place);
-                self.shift_t = 0.;
-                self.mode = Mode::Shift;
-                self.travel = None;
-                self.hush();
+                // はじめて行く時代では、クロノがまず前後の流れを説明する
+                if self.journal.visited[era] {
+                    self.start_shift(era, place);
+                } else {
+                    self.open_briefing(era, Some((era, place)));
+                }
             }
+            Act::Brief(era) => self.open_briefing(era, None),
+            Act::BriefBack => {
+                if let Overlay::Briefing(era, page) = self.overlay {
+                    self.show_briefing(era, page.saturating_sub(1));
+                }
+            }
+            Act::BriefSkip => self.finish_briefing(),
             Act::Goto(p) => self.goto(p),
             Act::Meet(i) => self.meet(i),
             Act::Observe(i) => self.observe(i),
@@ -874,6 +901,13 @@ impl Game {
                 Overlay::None => (),
                 Overlay::TrialIntro(era) => self.act(Act::Begin(era)),
                 Overlay::Title => self.open_story(0),
+                Overlay::Briefing(era, page) => {
+                    if page + 1 < briefing::pages(era).len() {
+                        self.show_briefing(era, page + 1);
+                    } else {
+                        self.finish_briefing();
+                    }
+                }
                 Overlay::Story(page) => {
                     if page + 1 < intro::PAGES.len() {
                         self.open_story(page + 1);
@@ -1102,6 +1136,15 @@ impl Game {
                     }
                     return;
                 }
+                if let Overlay::Briefing(..) = self.overlay {
+                    match k {
+                        27 => self.act(Act::BriefSkip),
+                        37 | 65 => self.act(Act::BriefBack),
+                        13 | 32 | 39 | 68 => self.act(Act::Next),
+                        _ => (),
+                    }
+                    return;
+                }
                 if let Overlay::Story(_) | Overlay::Title = self.overlay {
                     match k {
                         27 => self.act(Act::StorySkip),
@@ -1209,7 +1252,11 @@ impl Game {
         self.searching = false;
         if self.overlay != Overlay::None {
             // 会話・おはなしの枠の外を押したら次へ進む
-            if let Overlay::Meet(..) | Overlay::Story(_) | Overlay::Restore(_) = self.overlay {
+            if let Overlay::Meet(..)
+            | Overlay::Story(_)
+            | Overlay::Restore(_)
+            | Overlay::Briefing(..) = self.overlay
+            {
                 self.act(Act::Next);
             }
             // 表紙は「はじめる」のボタンで進む（最初のタップで読み上げを始めるため）
@@ -1440,6 +1487,7 @@ impl Game {
             Overlay::Treasure(era) => self.treasure_ui(era),
             Overlay::Story(page) => self.story_ui(page),
             Overlay::Title => self.title_ui(),
+            Overlay::Briefing(era, page) => self.briefing_ui(era, page),
             Overlay::Restore(i) => self.restore_explain_ui(i),
         }
         // 開いている枠の右上に 🔊（おはなしと復元力の説明は、それぞれの画面に置く）
@@ -1447,7 +1495,11 @@ impl Game {
             self.card_rect,
             matches!(
                 self.overlay,
-                Overlay::Help | Overlay::Title | Overlay::Story(_) | Overlay::Restore(_)
+                Overlay::Help
+                    | Overlay::Title
+                    | Overlay::Story(_)
+                    | Overlay::Restore(_)
+                    | Overlay::Briefing(..)
             ),
         ) {
             self.speaker_button(r[0] + r[2] - 96., r[1] + 12.);
@@ -1459,7 +1511,7 @@ impl Game {
             && self.mode != Mode::Shift
             && !matches!(
                 self.overlay,
-                Overlay::Title | Overlay::Story(_) | Overlay::Restore(_)
+                Overlay::Title | Overlay::Story(_) | Overlay::Restore(_) | Overlay::Briefing(..)
             )
             // スマートフォンでは通知が上に出るので、枠の見出しに重ねない
             && !(self.gfx.compact && self.overlay != Overlay::None)
@@ -1873,6 +1925,12 @@ impl Game {
         self.targets
             .push((Target::Shift, [x1 - 220., y0 + 50., 200., 48.]));
         self.speaker_button(x1 - 310., y0 + 58.);
+        self.button(
+            "クロノの せつめい",
+            [x1 - 310., y0 + 96., 160., 32.],
+            Act::Brief(self.pick),
+            false,
+        );
         if !compact {
             self.text(
                 "Enter でも転移できます",
@@ -2280,6 +2338,12 @@ impl Game {
         );
         self.text(era.name, ix, y0 + 30., iw - 90., 26., Font::Big, TEXT);
         self.speaker_button(ix + iw - 76., y0 + 26.);
+        self.button(
+            "せつめい",
+            [ix + iw - 160., y0 + 26., 78., 32.],
+            Act::Brief(ei),
+            false,
+        );
         let pc = PEOPLE.iter().filter(|p| p.era == ei).count();
         let ec = EVENTS.iter().filter(|x| x.era == ei).count();
         self.text(
@@ -4732,6 +4796,20 @@ mod tests {
         g
     }
 
+    /// 転移する。はじめての時代では、クロノの時代の説明を最後まで読んでから転移する
+    fn shift(g: &mut Game, era: usize) {
+        g.act(Act::Shift(era, None));
+        let mut pages = 0;
+        while let Overlay::Briefing(e, _) = g.overlay {
+            assert_eq!(e, era);
+            g.render();
+            g.act(Act::Next);
+            pages += 1;
+        }
+        assert!(pages == 0 || pages == briefing::pages(era).len());
+        assert_eq!(g.mode, Mode::Shift);
+    }
+
     fn run(g: &mut Game, secs: f32) {
         let mut t = 0.;
         while t < secs {
@@ -4764,7 +4842,7 @@ mod tests {
         let mut g = game(Gfx::new(1600, 900));
         for era in 0..ERAS.len() {
             g.act(Act::PickEra(era));
-            g.act(Act::Shift(era, None));
+            shift(&mut g, era);
             assert_eq!(g.mode, Mode::Shift);
             run(&mut g, warp::SHIFT_SECS + 0.2);
             assert_eq!(g.mode, Mode::Field);
@@ -4836,7 +4914,7 @@ mod tests {
     #[test]
     fn trial_needs_everything_and_a_perfect_score() {
         let mut g = game(Gfx::new(1600, 900));
-        g.act(Act::Shift(EDO, None));
+        shift(&mut g, EDO);
         run(&mut g, warp::SHIFT_SECS + 0.2);
         g.act(Act::TrialIntro(EDO));
         assert_eq!(g.overlay, Overlay::None);
@@ -4908,7 +4986,7 @@ mod tests {
         // クロノが「転移する」を指す
         assert_eq!(g.current_tip().unwrap().1, Some(intro::Target::Shift));
         assert!(g.targets.iter().any(|(t, _)| *t == intro::Target::Shift));
-        g.act(Act::Shift(ROME, None));
+        shift(&mut g, ROME);
         run(&mut g, warp::SHIFT_SECS + 0.2);
         // フォルムにはアントニウスがいる
         let antony = person_index("antony").unwrap();
@@ -4963,7 +5041,7 @@ mod tests {
     #[test]
     fn chrono_explains_terms_and_remembers_them() {
         let mut g = game(Gfx::new(1600, 900));
-        g.act(Act::Shift(ROME, None));
+        shift(&mut g, ROME);
         run(&mut g, warp::SHIFT_SECS + 0.2);
         let antony = person_index("antony").unwrap();
         g.act(Act::Meet(antony));
@@ -5019,7 +5097,7 @@ mod tests {
     fn word_memo_pages_one_term_at_a_time() {
         let mut g = game(Gfx::new(844, 390));
         g.gfx.set_compact(true);
-        g.act(Act::Shift(ROME, None));
+        shift(&mut g, ROME);
         run(&mut g, warp::SHIFT_SECS + 0.2);
         g.act(Act::Observe(event_index("lupercalia").unwrap()));
         g.render();
@@ -5086,7 +5164,7 @@ mod tests {
     fn chrono_tips_follow_the_arrival_guide_instead_of_cutting_it_off() {
         let mut g = Game::new(Gfx::new(1600, 900));
         g.journal.flags = FLAG_INTRO;
-        g.act(Act::Shift(HEIAN, None));
+        shift(&mut g, HEIAN);
         run(&mut g, warp::SHIFT_SECS + 0.2);
         assert!(
             g.last_speech.starts_with(ERAS[HEIAN].name),
@@ -5111,7 +5189,7 @@ mod tests {
         g.voice = false;
         g.act(Act::Replay);
         assert!(g.last_speech.contains(ERAS[0].name));
-        g.act(Act::Shift(ROME, None));
+        shift(&mut g, ROME);
         run(&mut g, warp::SHIFT_SECS + 0.2);
         let antony = person_index("antony").unwrap();
         g.act(Act::Meet(antony));
@@ -5199,6 +5277,47 @@ mod tests {
         }
     }
 
+    /// はじめての時代では、転移の前にクロノが時代の前後の流れを説明する
+    #[test]
+    fn chrono_briefs_an_era_before_the_first_visit() {
+        let mut g = game(Gfx::new(1600, 900));
+        g.act(Act::Shift(EDO, None));
+        assert_eq!(g.overlay, Overlay::Briefing(EDO, 0));
+        assert!(g.last_speech.starts_with(briefing::OPENING));
+        g.render();
+        g.act(Act::Next);
+        assert_eq!(g.overlay, Overlay::Briefing(EDO, 1));
+        g.act(Act::BriefBack);
+        assert_eq!(g.overlay, Overlay::Briefing(EDO, 0));
+        // とばしても転移はする
+        g.handle(Ev::Key(27, true));
+        assert_eq!(g.mode, Mode::Shift);
+        run(&mut g, warp::SHIFT_SECS + 0.2);
+        assert!(g.journal.visited[EDO]);
+        // 2回目からは説明なしで転移し、読み直しはいつでもできる
+        g.act(Act::Atlas);
+        g.act(Act::Shift(EDO, None));
+        assert_eq!(g.mode, Mode::Shift);
+        run(&mut g, warp::SHIFT_SECS + 0.2);
+        g.render();
+        assert!(g.buttons.iter().any(|b| matches!(b.act, Act::Brief(EDO))));
+        g.act(Act::Brief(EDO));
+        for _ in 0..briefing::pages(EDO).len() {
+            g.render();
+            g.act(Act::Next);
+        }
+        assert_eq!(g.overlay, Overlay::None);
+        assert_eq!(g.mode, Mode::Field, "reviewing does not travel again");
+        // スマートフォンでも描ける
+        g.gfx.set_compact(true);
+        for era in 0..ERAS.len() {
+            for page in 0..briefing::pages(era).len() {
+                g.show_briefing(era, page);
+                g.render();
+            }
+        }
+    }
+
     #[test]
     fn story_can_be_skipped_and_replayed() {
         let mut g = Game::new(Gfx::new(900, 420));
@@ -5257,7 +5376,7 @@ mod tests {
         let caesar = person_index("caesar").unwrap();
         g.act(Act::Meet(caesar));
         assert!(!g.journal.met[caesar]);
-        g.act(Act::Shift(ROME, None));
+        shift(&mut g, ROME);
         run(&mut g, warp::SHIFT_SECS + 0.2);
         g.act(Act::Meet(caesar));
         assert!(
@@ -5280,7 +5399,7 @@ mod tests {
     #[test]
     fn arrow_keys_follow_roads() {
         let mut g = game(Gfx::new(1600, 900));
-        g.act(Act::Shift(ROME, None));
+        shift(&mut g, ROME);
         run(&mut g, warp::SHIFT_SECS + 0.2);
         // フォルムから西へ：ポンペイウス劇場（道でつながる）かカピトリウム
         g.handle(Ev::Key(37, true));
@@ -5296,7 +5415,7 @@ mod tests {
             g.gfx.set_compact(c);
             g.frame(&[], 0.016, true);
             for era in 0..ERAS.len() {
-                g.act(Act::Shift(era, None));
+                shift(&mut g, era);
                 run(&mut g, warp::SHIFT_SECS + 0.2);
                 g.frame(&[], 0.016, true);
             }
