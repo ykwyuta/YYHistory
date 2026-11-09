@@ -297,8 +297,8 @@ fn marked<'a, T>(
 impl Journal {
     fn new() -> Self {
         Self {
-            era: 0,
-            place: ERAS[0].start,
+            era: ROME,
+            place: ERAS[ROME].start,
             visited: vec![false; ERAS.len()],
             met: vec![false; PEOPLE.len()],
             seen: vec![false; EVENTS.len()],
@@ -504,7 +504,7 @@ impl Game {
             .collect();
         let world = gfx.create_texture(w, h, &data).expect("world texture");
         let journal = Journal::new();
-        let p = &ERAS[0].places[ERAS[0].start];
+        let p = &ERAS[ROME].places[ERAS[ROME].start];
         let g = Self {
             gfx,
             world,
@@ -526,7 +526,7 @@ impl Game {
             tab: Tab::People,
             filter: None,
             reveal: false,
-            pick: 0,
+            pick: ROME,
             shift_t: 0.,
             shift_to: (0, None),
             avatar: (p.x, p.y),
@@ -5319,7 +5319,7 @@ mod tests {
         let mut g = game(Gfx::new(1600, 900));
         g.voice = false;
         g.act(Act::Replay);
-        assert!(g.last_speech.contains(ERAS[0].name));
+        assert!(g.last_speech.contains(ERAS[ROME].name));
         shift(&mut g, ROME);
         run(&mut g, warp::SHIFT_SECS + 0.2);
         let antony = person_index("antony").unwrap();
@@ -5698,6 +5698,6 @@ mod tests {
     fn chronology_is_ordered() {
         let c = chronology();
         assert!(c.windows(2).all(|w| event_key(w[0]) <= event_key(w[1])));
-        assert_eq!(EVENTS[c[0]].id, "lupercalia");
+        assert_eq!(EVENTS[c[0]].era, ALEXANDRIA);
     }
 }
