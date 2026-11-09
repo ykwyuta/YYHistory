@@ -68,6 +68,7 @@ enum Tab {
     People,
     Timeline,
     Events,
+    Treasures,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -83,6 +84,14 @@ enum Overlay {
     Observe(usize),
     Detail(Entry),
     Help,
+    /// 試練の始まり（時代）
+    TrialIntro(usize),
+    /// 試練の問題（時代, 何問目, 選んだ答え, 正解数）
+    Trial(usize, usize, Option<usize>, usize),
+    /// 試練の結果（時代, 正解数）
+    TrialResult(usize, usize),
+    /// 秘宝の説明（時代）
+    Treasure(usize),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -106,6 +115,11 @@ enum Act {
     Import,
     Reveal,
     Search,
+    TrialIntro(usize),
+    Begin(usize),
+    Answer(usize),
+    TrialNext,
+    Treasure(usize),
 }
 
 struct Button {
@@ -121,9 +135,20 @@ struct Journal {
     visited: Vec<bool>,
     met: Vec<bool>,
     seen: Vec<bool>,
+    /// 試練を突破して手に入れた秘宝（時代ごと）
+    treasures: Vec<bool>,
 }
 
-const MAGIC: &[u8; 8] = b"YYHIST\x02\0";
+const MAGIC: &[u8; 8] = b"YYHIST\x03\0";
+/// 秘宝の無い前の版の記録
+const MAGIC_V2: &[u8; 8] = b"YYHIST\x02\0";
+
+fn bits(v: &[bool]) -> u8 {
+    v.iter()
+        .enumerate()
+        .filter(|(_, x)| **x)
+        .fold(0u8, |a, (i, _)| a | 1 << i)
+}
 
 impl Journal {
     fn new() -> Self {
@@ -133,19 +158,15 @@ impl Journal {
             visited: vec![false; ERAS.len()],
             met: vec![false; PEOPLE.len()],
             seen: vec![false; EVENTS.len()],
+            treasures: vec![false; ERAS.len()],
         }
     }
     fn bytes(&self) -> Vec<u8> {
         let mut b = MAGIC.to_vec();
         b.push(self.era as u8);
         b.push(self.place as u8);
-        let mut v = 0u8;
-        for (i, x) in self.visited.iter().enumerate() {
-            if *x {
-                v |= 1 << i;
-            }
-        }
-        b.push(v);
+        b.push(bits(&self.visited));
+        b.push(bits(&self.treasures));
         let ids = |list: &mut Vec<u8>, ids: Vec<&str>| {
             list.extend_from_slice(&(ids.len() as u16).to_le_bytes());
             for id in ids {
@@ -178,7 +199,8 @@ impl Journal {
     fn read(b: &[u8]) -> Result<Self, String> {
         let invalid =
             || "YYHistoryの記録として読み込めません。現在の記録はそのままです。".to_string();
-        if b.len() < 19 || b.len() > 65536 || &b[..8] != MAGIC {
+        let v3 = b.len() >= 8 && &b[..8] == MAGIC;
+        if b.len() < 19 || b.len() > 65536 || !(v3 || &b[..8] == MAGIC_V2) {
             return Err(invalid());
         }
         let end = b.len() - 4;
@@ -191,7 +213,12 @@ impl Journal {
             return Err(invalid());
         }
         let visited = (0..ERAS.len()).map(|i| b[10] & (1 << i) != 0).collect();
-        let mut at = 11;
+        let tb = if v3 { b[11] } else { 0 };
+        if tb >> ERAS.len() != 0 {
+            return Err(invalid());
+        }
+        let treasures = (0..ERAS.len()).map(|i| tb & (1 << i) != 0).collect();
+        let mut at = if v3 { 12 } else { 11 };
         let mut list = |find: &dyn Fn(&str) -> Option<usize>, n_all: usize| {
             if at + 2 > end {
                 return Err(invalid());
@@ -228,6 +255,7 @@ impl Journal {
             visited,
             met,
             seen,
+            treasures,
         })
     }
 }
@@ -280,6 +308,8 @@ pub struct Game {
     shift_to: (usize, Option<usize>),
     avatar: (f32, f32),
     travel: Option<Travel>,
+    /// この起動中に試練の案内を出した時代
+    trial_offered: Vec<bool>,
     voice: bool,
     dirty: bool,
     save_in: f32,
@@ -325,6 +355,7 @@ impl Game {
             shift_to: (0, None),
             avatar: (p.x, p.y),
             travel: None,
+            trial_offered: vec![false; ERAS.len()],
             voice: platform::voice_enabled(),
             dirty: false,
             save_in: 0.,
@@ -402,6 +433,41 @@ impl Game {
     fn change(&mut self) {
         self.dirty = true;
         self.save_in = 0.8;
+    }
+
+    /// その時代の人物と出来事をすべて集めたか
+    fn era_complete(&self, era: usize) -> bool {
+        PEOPLE
+            .iter()
+            .zip(&self.journal.met)
+            .all(|(p, m)| p.era != era || *m)
+            && EVENTS
+                .iter()
+                .zip(&self.journal.seen)
+                .all(|(e, m)| e.era != era || *m)
+    }
+    fn treasure_count(&self) -> usize {
+        self.journal.treasures.iter().filter(|t| **t).count()
+    }
+
+    /// 会話や観察を閉じたとき：その時代の情報がそろったら試練を始める
+    fn close_overlay(&mut self) {
+        self.overlay = Overlay::None;
+        platform::speak("");
+        let era = self.journal.era;
+        if self.mode == Mode::Field
+            && self.era_complete(era)
+            && !self.journal.treasures[era]
+            && !self.trial_offered[era]
+        {
+            self.trial_offered[era] = true;
+            self.overlay = Overlay::TrialIntro(era);
+            if self.voice {
+                platform::speak(
+                    "この時代の記録はすべて集まった。アカシックレコードの試練が始まる。",
+                );
+            }
+        }
     }
 
     fn met_count(&self, era: Option<usize>) -> usize {
@@ -675,24 +741,77 @@ impl Game {
                             platform::speak(PEOPLE[i].lines[page + 1]);
                         }
                     } else {
-                        self.overlay = Overlay::None;
-                        platform::speak("");
+                        self.close_overlay();
                     }
                 }
                 Overlay::None => (),
-                _ => {
-                    self.overlay = Overlay::None;
-                    platform::speak("");
-                }
+                Overlay::TrialIntro(era) => self.act(Act::Begin(era)),
+                Overlay::Trial(_, _, Some(_), _) => self.act(Act::TrialNext),
+                Overlay::Trial(..) => (),
+                _ => self.close_overlay(),
             },
             Act::Prev => {
                 if let Overlay::Meet(i, page) = self.overlay {
                     self.overlay = Overlay::Meet(i, page.saturating_sub(1));
                 }
             }
-            Act::Close => {
-                self.overlay = Overlay::None;
-                platform::speak("");
+            Act::Close => self.close_overlay(),
+            Act::TrialIntro(era) => {
+                if self.era_complete(era) {
+                    self.overlay = Overlay::TrialIntro(era);
+                } else {
+                    self.notify("この時代の人物と出来事をすべて集めると、試練に挑める。");
+                }
+            }
+            Act::Begin(era) => {
+                if self.era_complete(era) {
+                    self.overlay = Overlay::Trial(era, 0, None, 0);
+                    self.speak_question();
+                }
+            }
+            Act::Answer(k) => {
+                if let Overlay::Trial(era, q, None, score) = self.overlay {
+                    let quiz = &QUIZZES[quizzes(era)[q]];
+                    let ok = k == quiz.answer;
+                    self.overlay = Overlay::Trial(era, q, Some(k), score + ok as usize);
+                    if self.voice {
+                        platform::speak(&format!(
+                            "{}。{}",
+                            if ok { "正解" } else { "不正解" },
+                            quiz.note
+                        ));
+                    }
+                }
+            }
+            Act::TrialNext => {
+                if let Overlay::Trial(era, q, Some(_), score) = self.overlay {
+                    let n = quizzes(era).len();
+                    if q + 1 < n {
+                        self.overlay = Overlay::Trial(era, q + 1, None, score);
+                        self.speak_question();
+                    } else {
+                        self.overlay = Overlay::TrialResult(era, score);
+                        if score == n {
+                            let first = !self.journal.treasures[era];
+                            self.journal.treasures[era] = true;
+                            self.save();
+                            if first {
+                                self.notify(&format!("秘宝を手に入れた：{}", treasure(era).name));
+                            }
+                        }
+                        if self.voice {
+                            platform::speak(&if score == n {
+                                format!("全問正解。秘宝、{}を手に入れた。", treasure(era).name)
+                            } else {
+                                format!("{}問中{}問正解。", n, score)
+                            });
+                        }
+                    }
+                }
+            }
+            Act::Treasure(era) => {
+                self.overlay = Overlay::Treasure(era);
+                self.scroll[Scroll::Overlay as usize] = 0.;
             }
             Act::Tab(t) => {
                 self.tab = t;
@@ -724,6 +843,21 @@ impl Game {
             Act::Import => platform::import_file(),
             Act::Reveal => self.reveal = !self.reveal,
             Act::Search => self.searching = true,
+        }
+    }
+
+    fn speak_question(&self) {
+        if let (true, Overlay::Trial(era, q, None, _)) = (self.voice, self.overlay) {
+            let quiz = &QUIZZES[quizzes(era)[q]];
+            platform::speak(&format!(
+                "第{}問。{}。1、{}。2、{}。3、{}。4、{}。",
+                q + 1,
+                quiz.q,
+                quiz.choices[0],
+                quiz.choices[1],
+                quiz.choices[2],
+                quiz.choices[3]
+            ));
         }
     }
 
@@ -815,6 +949,13 @@ impl Game {
                         _ => (),
                     }
                     return;
+                }
+                if let Overlay::Trial(_, _, None, _) = self.overlay {
+                    match k {
+                        49..=52 => return self.act(Act::Answer((k - 49) as usize)),
+                        97..=100 => return self.act(Act::Answer((k - 97) as usize)),
+                        _ => (),
+                    }
                 }
                 match k {
                     27 => {
@@ -1113,6 +1254,10 @@ impl Game {
             Overlay::Observe(i) => self.observe_ui(i),
             Overlay::Detail(e) => self.detail_ui(e),
             Overlay::Help => self.help_ui(),
+            Overlay::TrialIntro(era) => self.trial_intro_ui(era),
+            Overlay::Trial(era, q, pick, score) => self.trial_ui(era, q, pick, score),
+            Overlay::TrialResult(era, score) => self.trial_result_ui(era, score),
+            Overlay::Treasure(era) => self.treasure_ui(era),
         }
         if self.mode == Mode::Shift {
             self.shift_ui();
@@ -1203,14 +1348,16 @@ impl Game {
             );
         }
         let stat = format!(
-            "人物 {}/{}　出来事 {}/{}",
+            "人物 {}/{}　出来事 {}/{}　秘宝 {}/{}",
             self.met_count(None),
             PEOPLE.len(),
             self.seen_count(None),
-            EVENTS.len()
+            EVENTS.len(),
+            self.treasure_count(),
+            ERAS.len()
         );
         let right = w - if compact { 200. } else { 330. };
-        self.text(&stat, right - 230., by + 8., 220., 22., Font::Normal, CYAN);
+        self.text(&stat, right - 300., by + 8., 290., 22., Font::Normal, CYAN);
         if compact {
             self.button(
                 "使い方",
@@ -1373,7 +1520,11 @@ impl Game {
             let done = self.met_count(Some(i)) + self.seen_count(Some(i));
             let all = PEOPLE.iter().filter(|p| p.era == i).count()
                 + EVENTS.iter().filter(|x| x.era == i).count();
-            let pct = format!("{}%", done * 100 / all.max(1));
+            let pct = if self.journal.treasures[i] {
+                "◆秘宝".to_string()
+            } else {
+                format!("{}%", done * 100 / all.max(1))
+            };
             self.text(
                 &pct,
                 lw - 86.,
@@ -1914,6 +2065,80 @@ impl Game {
             );
             y += 60.;
         } else {
+            if self.era_complete(ei) {
+                let got = self.journal.treasures[ei];
+                let rr = [ix, y, iw, 58.];
+                let glow = 0.5 + 0.5 * (self.clock * 2.5).sin();
+                self.gfx.fill_round(
+                    rr[0],
+                    rr[1],
+                    rr[0] + iw,
+                    rr[1] + 58.,
+                    8.,
+                    mix(
+                        [0.10, 0.22, 0.32, 1.],
+                        [0.16, 0.34, 0.44, 1.],
+                        if got { 0. } else { glow },
+                    ),
+                );
+                self.gfx.stroke_round(
+                    rr[0],
+                    rr[1],
+                    rr[0] + iw,
+                    rr[1] + 58.,
+                    8.,
+                    1.5,
+                    if got { GOLD } else { CYAN },
+                );
+                if got {
+                    self.text(
+                        "◆ この時代の秘宝",
+                        ix + 12.,
+                        y + 6.,
+                        iw - 24.,
+                        18.,
+                        Font::Small,
+                        GOLD,
+                    );
+                    self.text(
+                        treasure(ei).name,
+                        ix + 12.,
+                        y + 26.,
+                        iw - 24.,
+                        24.,
+                        Font::Big,
+                        TEXT,
+                    );
+                    self.buttons.push(Button {
+                        rect: rr,
+                        act: Act::Treasure(ei),
+                    });
+                } else {
+                    self.text(
+                        "記録がすべてそろった",
+                        ix + 12.,
+                        y + 6.,
+                        iw - 24.,
+                        18.,
+                        Font::Small,
+                        CYAN,
+                    );
+                    self.text(
+                        "アカシックレコードの試練に挑む",
+                        ix + 12.,
+                        y + 26.,
+                        iw - 24.,
+                        24.,
+                        Font::Big,
+                        TEXT,
+                    );
+                    self.buttons.push(Button {
+                        rect: rr,
+                        act: Act::TrialIntro(ei),
+                    });
+                }
+                y += 70.;
+            }
             let p = &era.places[self.journal.place];
             self.text("現在地", ix, y, iw, 16., Font::Small, MUTED);
             self.text(p.name, ix, y + 16., iw, 26., Font::Big, GOLD);
@@ -2333,6 +2558,7 @@ impl Game {
             ("人物一覧表", Tab::People),
             ("年表", Tab::Timeline),
             ("出来事集", Tab::Events),
+            ("秘宝", Tab::Treasures),
         ];
         let tw = if compact { 112. } else { 140. };
         for (k, (label, t)) in tabs.iter().enumerate() {
@@ -2386,7 +2612,7 @@ impl Game {
             rect: sb,
             act: Act::Search,
         });
-        let rx = 16. + 3. * (tw + 8.);
+        let rx = 16. + 4. * (tw + 8.);
         if sx - rx > 150. {
             self.button(
                 if self.reveal {
@@ -2450,6 +2676,7 @@ impl Game {
             Tab::People => self.codex_people(gy - off, w, gy, h),
             Tab::Timeline => self.codex_timeline(gy - off, w, gy, h),
             Tab::Events => self.codex_events(gy - off, w, gy, h),
+            Tab::Treasures => self.codex_treasures(gy - off, w, gy, h),
         };
         self.gfx.clip_end();
         self.scroll_max[Scroll::Codex as usize] = content - view[3] + 20.;
@@ -2576,6 +2803,535 @@ impl Game {
             );
         }
         28. + (items.len().div_ceil(cols)) as f32 * (ch + 10.)
+    }
+
+    fn codex_treasures(&mut self, y0: f32, w: f32, vy0: f32, vy1: f32) -> f32 {
+        let items: Vec<usize> = (0..ERAS.len())
+            .filter(|i| self.filter.is_none_or(|f| f == *i))
+            .collect();
+        self.text(
+            &format!("手に入れた秘宝 {}/{}", self.treasure_count(), ERAS.len()),
+            18.,
+            y0 + 2.,
+            400.,
+            20.,
+            Font::Normal,
+            CYAN,
+        );
+        let cols = (((w - 32.) / 330.) as usize).max(2);
+        let cw = (w - 32. - (cols - 1) as f32 * 10.) / cols as f32;
+        let ch = 150.;
+        let y0 = y0 + 28.;
+        for (k, era) in items.iter().enumerate() {
+            let x = 16. + (k % cols) as f32 * (cw + 10.);
+            let y = y0 + (k / cols) as f32 * (ch + 10.);
+            if y + ch < vy0 || y > vy1 {
+                continue;
+            }
+            let got = self.journal.treasures[*era];
+            let known = got || self.reveal;
+            let c = era_color(*era);
+            let t = treasure(*era);
+            self.gfx.fill_round(
+                x,
+                y,
+                x + cw,
+                y + ch,
+                8.,
+                if known {
+                    PANEL2
+                } else {
+                    [0.09, 0.12, 0.19, 1.]
+                },
+            );
+            self.gfx.stroke_round(
+                x,
+                y,
+                x + cw,
+                y + ch,
+                8.,
+                1.5,
+                if got { GOLD } else { alpha(LOCKED, 0.7) },
+            );
+            self.gem(x + 50., y + 70., 30., c, known);
+            let tx = x + 96.;
+            let tw = cw - 108.;
+            self.text(
+                &format!("{}　{}", ERAS[*era].years, ERAS[*era].name),
+                tx,
+                y + 12.,
+                tw,
+                18.,
+                Font::Small,
+                alpha(c, 0.95),
+            );
+            if known {
+                self.text(t.name, tx, y + 34., tw, 26., Font::Big, TEXT);
+                self.gfx
+                    .clip_begin(x, y.max(vy0), x + cw, (y + ch - 8.).min(vy1));
+                self.text(t.desc, tx, y + 64., tw, 72., Font::Small, MUTED);
+                self.gfx.clip_end();
+            } else {
+                self.text("？？？", tx, y + 34., tw, 26., Font::Big, MUTED);
+                let hint = if self.era_complete(*era) {
+                    "アカシックレコードの試練に全問正解すると手に入る"
+                } else {
+                    "この時代の人物と出来事をすべて集めると、試練に挑める"
+                };
+                self.text(hint, tx, y + 66., tw, 40., Font::Small, LOCKED);
+            }
+            self.buttons.push(Button {
+                rect: [x, y.max(vy0), cw, (y + ch).min(vy1) - y.max(vy0)],
+                act: Act::Treasure(*era),
+            });
+        }
+        28. + items.len().div_ceil(cols) as f32 * (ch + 10.)
+    }
+
+    /// 秘宝の印（輝く宝石）
+    fn gem(&mut self, x: f32, y: f32, r: f32, c: [f32; 4], lit: bool) {
+        if lit {
+            let p = 0.5 + 0.5 * (self.clock * 2.).sin();
+            self.gfx.fill_circle(x, y, r + 8. + p * 3., alpha(c, 0.18));
+        }
+        self.gfx.fill_circle(
+            x,
+            y,
+            r,
+            if lit {
+                mix(NIGHT, c, 0.75)
+            } else {
+                [0.13, 0.17, 0.25, 1.]
+            },
+        );
+        self.gfx
+            .stroke_circle(x, y, r, 2., if lit { GOLD } else { LOCKED });
+        self.gfx.stroke_circle(
+            x,
+            y,
+            r * 0.62,
+            1.,
+            alpha(if lit { TEXT } else { MUTED }, 0.5),
+        );
+        self.text(
+            if lit { "◆" } else { "？" },
+            x - r,
+            y - r,
+            r * 2.,
+            r * 2.,
+            Font::BigCenter,
+            if lit { TEXT } else { MUTED },
+        );
+    }
+
+    /// 試練の背景（星の巡る記録の輪）
+    fn akashic_backdrop(&mut self) {
+        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
+        self.gfx.fill_rect(0., 0., w, h, [0.01, 0.03, 0.08, 0.86]);
+        let (cx, cy) = (w / 2., h / 2.);
+        for k in 0..5 {
+            let r = 120. + k as f32 * 90. + (self.clock * 0.6 + k as f32).sin() * 6.;
+            self.gfx
+                .stroke_circle(cx, cy, r, 1., alpha(CYAN, 0.10 + 0.04 * (4 - k) as f32));
+        }
+        for k in 0..24 {
+            let a = k as f32 / 24. * std::f32::consts::TAU + self.clock * 0.05;
+            let r = 300. + (k % 3) as f32 * 60.;
+            self.gfx.fill_circle(
+                cx + a.cos() * r,
+                cy + a.sin() * r * 0.6,
+                1.6,
+                alpha(CYAN, 0.5),
+            );
+        }
+    }
+
+    fn trial_card(&mut self, cw: f32, ch: f32) -> [f32; 4] {
+        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
+        self.akashic_backdrop();
+        let cw = cw.min(w - 32.);
+        let ch = ch.min(h - 24.);
+        let (x, y) = ((w - cw) / 2., (h - ch) / 2.);
+        self.gfx
+            .fill_round(x, y, x + cw, y + ch, 12., [0.05, 0.10, 0.18, 0.97]);
+        self.gfx
+            .stroke_round(x + 0.5, y + 0.5, x + cw - 0.5, y + ch - 0.5, 12., 1.5, CYAN);
+        self.gfx.stroke_round(
+            x + 5.,
+            y + 5.,
+            x + cw - 5.,
+            y + ch - 5.,
+            9.,
+            1.,
+            alpha(GOLD, 0.5),
+        );
+        [x, y, cw, ch]
+    }
+
+    fn trial_intro_ui(&mut self, era: usize) {
+        let compact = self.gfx.compact;
+        let [x, y, cw, ch] = self.trial_card(760., if compact { 420. } else { 460. });
+        self.text(
+            "― アカシックレコードの試練 ―",
+            x,
+            y + 26.,
+            cw,
+            26.,
+            Font::BigCenter,
+            CYAN,
+        );
+        self.text(
+            &format!("{}　{}", ERAS[era].years, ERAS[era].name),
+            x,
+            y + 60.,
+            cw,
+            22.,
+            Font::NormalCenter,
+            GOLD,
+        );
+        self.gem(
+            x + cw / 2.,
+            y + if compact { 130. } else { 150. },
+            34.,
+            era_color(era),
+            false,
+        );
+        let body = format!(
+            "この時代の人物と出来事の記録が、すべてそろった。\nアカシックレコードが、あなたの理解を確かめようとしている。\n\n{}についての四択問題が{}問。全問正解すると、この時代の秘宝が手に入る。\n間違えても、何度でも挑み直せる。",
+            ERAS[era].name,
+            quizzes(era).len()
+        );
+        let by = y + if compact { 182. } else { 206. };
+        self.text(
+            &body,
+            x + 40.,
+            by,
+            cw - 80.,
+            ch - (by - y) - 70.,
+            Font::NormalCenter,
+            TEXT,
+        );
+        self.button(
+            "あとで挑む",
+            [x + 30., y + ch - 54., 160., 38.],
+            Act::Close,
+            false,
+        );
+        self.button(
+            "試練を始める",
+            [x + cw - 250., y + ch - 54., 220., 38.],
+            Act::Begin(era),
+            true,
+        );
+    }
+
+    fn trial_ui(&mut self, era: usize, q: usize, pick: Option<usize>, score: usize) {
+        let compact = self.gfx.compact;
+        let list = quizzes(era);
+        let quiz = &QUIZZES[list[q]];
+        let row = if compact { 42. } else { 50. };
+        let cw0 = 860.0f32.min(self.gfx.width as f32 - 32.);
+        let qh = self.gfx.measure_h(quiz.q, Font::Big, cw0 - 60.).max(26.);
+        let nh = self.gfx.measure_h(quiz.note, Font::Normal, cw0 - 60.) + 24.;
+        let need = 46. + 18. + qh + 4. * row + 34. + nh + 64.;
+        let [x, y, cw, ch] = self.trial_card(860., need);
+        self.text(
+            &format!(
+                "アカシックレコードの試練　｜　{}　第{}問 / {}",
+                ERAS[era].name,
+                q + 1,
+                list.len()
+            ),
+            x + 30.,
+            y + 18.,
+            cw - 160.,
+            20.,
+            Font::Normal,
+            CYAN,
+        );
+        let qy = y + 46.;
+        self.gfx
+            .fill_rect(x + 30., qy - 4., x + cw - 30., qy - 3., alpha(CYAN, 0.4));
+        self.text(
+            &format!("{}", quiz.q),
+            x + 30.,
+            qy + 6.,
+            cw - 60.,
+            qh,
+            Font::Big,
+            TEXT,
+        );
+        // 進み具合
+        for k in 0..list.len() {
+            let cx = x + cw - 40. - (list.len() - 1 - k) as f32 * 20.;
+            let c = if k < q || (k == q && pick.is_some()) {
+                GOLD
+            } else if k == q {
+                CYAN
+            } else {
+                LOCKED
+            };
+            self.gfx.fill_circle(cx, y + 28., 5., c);
+        }
+        let mut cy = qy + 18. + qh;
+        for (k, choice) in quiz.choices.iter().enumerate() {
+            let rr = [x + 30., cy, cw - 60., row - 8.];
+            let hover = pick.is_none() && inside(rr, self.mouse.0, self.mouse.1);
+            let (fill, edge) = match pick {
+                Some(_) if k == quiz.answer => ([0.12, 0.36, 0.28, 1.], [0.45, 0.90, 0.62, 1.]),
+                Some(p) if p == k => ([0.40, 0.14, 0.14, 1.], [0.95, 0.45, 0.40, 1.]),
+                Some(_) => ([0.08, 0.12, 0.20, 1.], alpha(EDGE, 0.5)),
+                None if hover => ([0.18, 0.28, 0.42, 1.], CYAN),
+                None => (PANEL2, EDGE),
+            };
+            self.gfx
+                .fill_round(rr[0], rr[1], rr[0] + rr[2], rr[1] + rr[3], 8., fill);
+            self.gfx
+                .stroke_round(rr[0], rr[1], rr[0] + rr[2], rr[1] + rr[3], 8., 1.2, edge);
+            self.gfx
+                .fill_circle(rr[0] + 22., rr[1] + rr[3] / 2., 13., alpha(edge, 0.9));
+            self.text(
+                &format!("{}", k + 1),
+                rr[0] + 9.,
+                rr[1] + rr[3] / 2. - 13.,
+                26.,
+                26.,
+                Font::NormalCenter,
+                NIGHT,
+            );
+            self.text(
+                choice,
+                rr[0] + 46.,
+                rr[1] + 2.,
+                rr[2] - 56.,
+                rr[3] - 4.,
+                Font::NormalCenter,
+                TEXT,
+            );
+            if pick.is_none() {
+                self.buttons.push(Button {
+                    rect: rr,
+                    act: Act::Answer(k),
+                });
+            }
+            cy += row;
+        }
+        if let Some(p) = pick {
+            let ok = p == quiz.answer;
+            let ny = cy + 2.;
+            self.text(
+                if ok { "正解！" } else { "不正解…" },
+                x + 30.,
+                ny,
+                120.,
+                24.,
+                Font::Big,
+                if ok {
+                    [0.55, 0.95, 0.68, 1.]
+                } else {
+                    [0.98, 0.55, 0.50, 1.]
+                },
+            );
+            let note = if ok {
+                quiz.note.to_string()
+            } else {
+                format!("正解は「{}」。{}", quiz.choices[quiz.answer], quiz.note)
+            };
+            self.text(
+                &note,
+                x + 30.,
+                ny + 28.,
+                cw - 60.,
+                y + ch - 60. - ny - 28.,
+                Font::Normal,
+                MUTED,
+            );
+            let last = q + 1 >= list.len();
+            self.button(
+                if last {
+                    "結果を見る"
+                } else {
+                    "次の問題へ"
+                },
+                [x + cw - 230., y + ch - 50., 200., 36.],
+                Act::TrialNext,
+                true,
+            );
+        } else {
+            self.text(
+                "1〜4のキーでも答えられます",
+                x + 30.,
+                y + ch - 42.,
+                300.,
+                20.,
+                Font::Small,
+                MUTED,
+            );
+        }
+        self.text(
+            &format!("正解 {}", score),
+            x + cw / 2. - 60.,
+            y + ch - 42.,
+            120.,
+            20.,
+            Font::NormalCenter,
+            MUTED,
+        );
+    }
+
+    fn trial_result_ui(&mut self, era: usize, score: usize) {
+        let n = quizzes(era).len();
+        let win = score == n;
+        let compact = self.gfx.compact;
+        let dh = self.gfx.measure_h(
+            treasure(era).desc,
+            Font::Normal,
+            800.0f32.min(self.gfx.width as f32 - 32.) - 80.,
+        );
+        let top = if compact { 122. } else { 140. };
+        let [x, y, cw, ch] = self.trial_card(800., if win { top + 72. + dh + 76. } else { 340. });
+        self.text("― 試練の結果 ―", x, y + 22., cw, 24., Font::BigCenter, CYAN);
+        self.text(
+            &format!("{}問中 {}問 正解", n, score),
+            x,
+            y + 54.,
+            cw,
+            30.,
+            Font::BigCenter,
+            if win { GOLD } else { TEXT },
+        );
+        if win {
+            let t = treasure(era);
+            let gy = y + top;
+            self.gem(x + 80., gy + 20., 40., era_color(era), true);
+            self.text(
+                "秘宝を手に入れた",
+                x + 140.,
+                gy - 16.,
+                cw - 170.,
+                18.,
+                Font::Small,
+                GOLD,
+            );
+            self.text(t.name, x + 140., gy + 4., cw - 170., 30., Font::Big, TEXT);
+            let dy = gy + 72.;
+            self.gfx.clip_begin(x, dy, x + cw, y + ch - 60.);
+            self.text(
+                t.desc,
+                x + 40.,
+                dy,
+                cw - 80.,
+                y + ch - 60. - dy,
+                Font::Normal,
+                MUTED,
+            );
+            self.gfx.clip_end();
+            self.button(
+                "図鑑の秘宝を見る",
+                [x + 30., y + ch - 50., 190., 36.],
+                Act::Treasure(era),
+                false,
+            );
+            self.button(
+                "旅に戻る",
+                [x + cw - 210., y + ch - 50., 180., 36.],
+                Act::Close,
+                true,
+            );
+        } else {
+            let body = "全問正解には届かなかった。\n\nこの時代の人物の話や出来事の記録を、図鑑で読み返してから挑み直そう。\n間違えた問題の解説にも、ヒントがある。";
+            self.text(
+                body,
+                x + 50.,
+                y + 100.,
+                cw - 100.,
+                ch - 170.,
+                Font::NormalCenter,
+                TEXT,
+            );
+            self.button(
+                "図鑑で復習する",
+                [x + 30., y + ch - 50., 180., 36.],
+                Act::Codex,
+                false,
+            );
+            self.button(
+                "もう一度挑む",
+                [x + cw / 2. - 90., y + ch - 50., 180., 36.],
+                Act::Begin(era),
+                true,
+            );
+            self.button(
+                "旅に戻る",
+                [x + cw - 190., y + ch - 50., 160., 36.],
+                Act::Close,
+                false,
+            );
+        }
+    }
+
+    fn treasure_ui(&mut self, era: usize) {
+        let got = self.journal.treasures[era];
+        let known = got || self.reveal;
+        let t = treasure(era);
+        let tw = 760.0f32.min(self.gfx.width as f32 - 32.) - 80.;
+        let need = if known {
+            220. + self.gfx.measure_h(t.desc, Font::Normal, tw)
+                + self.gfx.measure_h(t.source, Font::Small, tw)
+        } else {
+            300.
+        };
+        let [x, y, cw, ch] = self.card(760., need);
+        self.text(
+            &format!(
+                "秘宝　{}　{}{}",
+                ERAS[era].years,
+                ERAS[era].name,
+                if got { "" } else { "（未獲得）" }
+            ),
+            x + 30.,
+            y + 18.,
+            cw - 60.,
+            18.,
+            Font::Small,
+            if got { GOLD } else { LOCKED },
+        );
+        self.gem(x + 74., y + 90., 40., era_color(era), known);
+        if known {
+            self.text(t.name, x + 136., y + 72., cw - 166., 30., Font::Big, TEXT);
+            let dy = y + 150.;
+            let dh = self.gfx.measure_h(t.desc, Font::Normal, cw - 80.);
+            self.text(t.desc, x + 40., dy, cw - 80., dh, Font::Normal, TEXT);
+            self.text(
+                &format!("史料・所蔵：{}", t.source),
+                x + 40.,
+                dy + dh + 10.,
+                cw - 80.,
+                40.,
+                Font::Small,
+                MUTED,
+            );
+        } else {
+            self.text(
+                "？？？",
+                x + 136.,
+                y + 72.,
+                cw - 166.,
+                30.,
+                Font::Big,
+                MUTED,
+            );
+            self.text(
+                "この時代の人物と出来事をすべて集め、アカシックレコードの試練に全問正解すると手に入る。",
+                x + 40., y + 150., cw - 80., 60., Font::Normal, LOCKED,
+            );
+        }
+        self.button(
+            "閉じる",
+            [x + cw - 160., y + ch - 48., 136., 34.],
+            Act::Close,
+            true,
+        );
     }
 
     fn codex_events(&mut self, y0: f32, w: f32, vy0: f32, vy1: f32) -> f32 {
@@ -3153,7 +3909,7 @@ impl Game {
             Font::TitleMid,
             GOLD,
         );
-        let body = "1　世界地図で行き先の時代を選び、「転移する」でその時代へ渡ります。\n\n2　時代の地図では、場所を押すと道をたどって移動します。矢印キーでも移動できます。「人」の印はまだ会っていない人物、「！」はまだ観察していない出来事のある場所です。\n\n3　人物に「会う」と人物一覧表に、出来事を「観察」すると出来事集と年表に記録されます。\n\n4　図鑑では、人物一覧表・年表・出来事集を見返せます。「未発見も表示」をONにすると、まだ見つけていない項目も読めます（学習用）。\n\n―― 内容の正確さについて ――\n年代・人物・出来事は、各項目に示した史料と研究に基づいてまとめています。日付に諸説あるものや史料によって食い違うものは本文に記しています。和暦の月日は当時の暦（旧暦）のままです。\n人物の言葉は、事実を本人の語りとして再構成した教材であり、「」で示した史料の引用を除いて実際の発言ではありません。人物がいる場所は、その人物にゆかりのある場所です。地図は位置関係を示す概略図で、建物の形や距離は正確ではありません。\n\nF2 図鑑 ／ F3 使い方 ／ F11 全画面 ／ Esc 戻る ／ Enter 次へ・転移";
+        let body = "1　世界地図で行き先の時代を選び、「転移する」でその時代へ渡ります。\n\n2　時代の地図では、場所を押すと道をたどって移動します。矢印キーでも移動できます。「人」の印はまだ会っていない人物、「！」はまだ観察していない出来事のある場所です。\n\n3　人物に「会う」と人物一覧表に、出来事を「観察」すると出来事集と年表に記録されます。\n\n4　その時代の人物と出来事をすべて集めると「アカシックレコードの試練」が始まります。時代についての四択問題5問に全問正解すると、その時代にゆかりのある実在の品が「秘宝」として手に入ります。何度でも挑み直せます。\n\n5　図鑑では、人物一覧表・年表・出来事集・秘宝を見返せます。「未発見も表示」をONにすると、まだ見つけていない項目も読めます（学習用）。\n\n―― 内容の正確さについて ――\n年代・人物・出来事は、各項目に示した史料と研究に基づいてまとめています。日付に諸説あるものや史料によって食い違うものは本文に記しています。和暦の月日は当時の暦（旧暦）のままです。\n人物の言葉は、事実を本人の語りとして再構成した教材であり、「」で示した史料の引用を除いて実際の発言ではありません。人物がいる場所は、その人物にゆかりのある場所です。地図は位置関係を示す概略図で、建物の形や距離は正確ではありません。\n\nF2 図鑑 ／ F3 使い方 ／ F11 全画面 ／ Esc 戻る ／ Enter 次へ・転移";
         let by = y + 72.;
         let bh = ch - 72. - 62.;
         self.scroll_areas.push(([x, by, cw, bh], Scroll::Overlay));
@@ -3480,6 +4236,7 @@ mod tests {
         j.visited[EDO] = true;
         j.met[5] = true;
         j.seen[7] = true;
+        j.treasures[2] = true;
         let b = j.bytes();
         assert_eq!(Journal::read(&b).unwrap(), j);
         for n in 0..b.len() {
@@ -3512,15 +4269,26 @@ mod tests {
                         g.render();
                         g.act(Act::Next);
                     }
-                    assert_eq!(g.overlay, Overlay::None);
+                    assert!(matches!(g.overlay, Overlay::None | Overlay::TrialIntro(_)));
                 }
                 for i in g.events_here() {
                     g.act(Act::Observe(i));
                     g.render();
                     g.act(Act::Close);
                 }
+                if !g.era_complete(era) {
+                    assert_eq!(g.overlay, Overlay::None, "trial only after everything");
+                }
             }
+            // 情報がそろうと試練が始まる
+            assert!(g.era_complete(era));
+            assert_eq!(g.overlay, Overlay::TrialIntro(era));
+            g.render();
+            pass_trial(&mut g, era, true);
+            assert!(g.journal.treasures[era]);
+            g.act(Act::Close);
         }
+        assert!(g.journal.treasures.iter().all(|t| *t));
         assert!(g.journal.met.iter().all(|m| *m));
         assert!(g.journal.seen.iter().all(|m| *m));
         assert!(g.journal.visited.iter().all(|m| *m));
@@ -3529,6 +4297,84 @@ mod tests {
         g.apply_loaded(&b);
         assert_eq!(g.met_count(None), PEOPLE.len());
         assert_eq!(g.seen_count(None), EVENTS.len());
+    }
+
+    /// 試練を最後まで答える（perfect=false なら一問だけ間違える）
+    fn pass_trial(g: &mut Game, era: usize, perfect: bool) {
+        g.act(Act::Begin(era));
+        let n = quizzes(era).len();
+        for q in 0..n {
+            assert!(matches!(g.overlay, Overlay::Trial(e, k, None, _) if e == era && k == q));
+            g.render();
+            let quiz = &QUIZZES[quizzes(era)[q]];
+            let k = if !perfect && q == 2 {
+                (quiz.answer + 1) % 4
+            } else {
+                quiz.answer
+            };
+            g.handle(Ev::Key(49 + k as u32, true));
+            g.render();
+            g.act(Act::Next);
+        }
+        let score = if perfect { n } else { n - 1 };
+        assert_eq!(g.overlay, Overlay::TrialResult(era, score));
+        g.render();
+    }
+
+    #[test]
+    fn trial_needs_everything_and_a_perfect_score() {
+        let mut g = Game::new(Gfx::new(1600, 900));
+        g.act(Act::Shift(EDO, None));
+        run(&mut g, 2.);
+        g.act(Act::TrialIntro(EDO));
+        assert_eq!(g.overlay, Overlay::None);
+        g.act(Act::Begin(EDO));
+        assert_eq!(g.overlay, Overlay::None);
+        for (i, p) in PEOPLE.iter().enumerate() {
+            g.journal.met[i] |= p.era == EDO;
+        }
+        for (i, e) in EVENTS.iter().enumerate() {
+            g.journal.seen[i] |= e.era == EDO;
+        }
+        g.act(Act::Close);
+        assert_eq!(g.overlay, Overlay::TrialIntro(EDO));
+        // 一問でも間違えると秘宝は手に入らない
+        pass_trial(&mut g, EDO, false);
+        assert!(!g.journal.treasures[EDO]);
+        // 一度閉じても、また自動では始まらない。欄のボタンから挑み直せる
+        g.act(Act::Close);
+        assert_eq!(g.overlay, Overlay::None);
+        g.act(Act::TrialIntro(EDO));
+        pass_trial(&mut g, EDO, true);
+        assert!(g.journal.treasures[EDO]);
+        assert_eq!(g.treasure_count(), 1);
+        g.act(Act::Close);
+        g.render();
+        g.act(Act::Codex);
+        g.act(Act::Tab(Tab::Treasures));
+        g.render();
+        g.act(Act::Treasure(EDO));
+        g.render();
+        g.act(Act::Treasure(ROME));
+        g.render();
+        // 秘宝は保存される
+        let b = g.journal.bytes();
+        let j = Journal::read(&b).unwrap();
+        assert!(j.treasures[EDO] && !j.treasures[ROME]);
+    }
+
+    #[test]
+    fn reads_saves_without_treasures() {
+        let mut j = Journal::new();
+        j.met[3] = true;
+        j.visited[1] = true;
+        let mut b = j.bytes();
+        b.truncate(b.len() - 4);
+        b[..8].copy_from_slice(MAGIC_V2);
+        b.remove(11);
+        let hash = checksum(&b);
+        b.extend_from_slice(&hash.to_le_bytes());
+        assert_eq!(Journal::read(&b).unwrap(), j);
     }
 
     #[test]
@@ -3581,7 +4427,7 @@ mod tests {
                 g.frame(&[], 0.016, true);
             }
             g.act(Act::Codex);
-            for t in [Tab::People, Tab::Timeline, Tab::Events] {
+            for t in [Tab::People, Tab::Timeline, Tab::Events, Tab::Treasures] {
                 g.act(Act::Tab(t));
                 for f in std::iter::once(None).chain((0..ERAS.len()).map(Some)) {
                     g.act(Act::Filter(f));

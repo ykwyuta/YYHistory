@@ -46,5 +46,15 @@ const before=Buffer.from(saved);const ptr=wasm.yy_alloc(saved.length);new Uint8A
 tick(20);assert.equal(Buffer.from(saved).toString('hex'),before.toString('hex'));
 // 検索欄の位置を返す
 assert.ok(wasm.yy_search_box(2)>100);
+// ローマの記録がそろった状態を読み込み、アカシックレコードの試練に挑む
+{const enc=new TextEncoder();const b=[...enc.encode('YYHIST'),3,0,0,2,1,0];
+ const list=ids=>{b.push(ids.length,0);for(const id of ids){const e=enc.encode(id);b.push(e.length,...e);}};
+ list(['caesar','calpurnia','brutus','cassius','antony','cicero']);list(['lupercalia','ides','capitol_retreat','tellus_senate','funeral']);
+ let h=2166136261;for(const v of b){h=Math.imul(h^v,16777619)>>>0;}b.push(h&255,(h>>8)&255,(h>>16)&255,h>>>24);
+ const p=wasm.yy_alloc(b.length);new Uint8Array(wasm.memory.buffer,p,b.length).set(b);wasm.yy_loaded(p,b.length);tick();}
+key(0x1b);key(13);tick(40);has('アカシックレコードの試練に挑む');click('アカシックレコードの試練に挑む');has('試練を始める');
+key(13);has('第1問 / 5');
+for(const k of [2,3,2,1,4]){key(48+k);has('正解！');key(13);}
+has('5問中 5問 正解');has('デナリウス銀貨');has('秘宝 1/7');
 wasm.yy_event(6,900,420,0);wasm.yy_event(8,1,0,0);tick();has('YYHistory');
-console.log('Production Wasm smoke passed: atlas → shift → field → meet → observe → codex → import → compact.');
+console.log('Production Wasm smoke passed: atlas → shift → field → meet → observe → codex → import → trial → treasure → compact.');
