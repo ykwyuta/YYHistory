@@ -14,7 +14,7 @@ impl Game {
         let terms = notes::for_person(p.id, page);
         let cw0 = 860.0f32.min(self.gfx.width as f32 - 32.);
         let head = if compact { 150. } else { 170. };
-        let bh = self.talk_body(i, t, page, 0., 0., cw0 - 48., false);
+        let bh = self.talk_body(t, page, 0., 0., cw0 - 48., false);
         let mh = self.memo_h(&terms, cw0 - 48.);
         let need = head + bh + if mh > 0. { mh + 12. } else { 0. } + 60.;
         let [x, y, cw, ch] = self.card(860., need);
@@ -56,7 +56,7 @@ impl Game {
         let off = self.scroll[Scroll::Overlay as usize];
         self.gfx.clip_begin(x, by, x + cw, by + view_h);
         let ly = by - off;
-        let bh = self.talk_body(i, t, page, x + 24., ly, cw - 48., true);
+        let bh = self.talk_body(t, page, x + 24., ly, cw - 48., true);
         let mh = self.memo(&terms, x + 24., ly + bh + 12., cw - 48.);
         self.gfx.clip_end();
         self.scroll_max[Scroll::Overlay as usize] =
@@ -80,7 +80,6 @@ impl Game {
     /// 会話の本文（ト書き・吹き出し・質問）。draw が false なら高さだけを測る
     fn talk_body(
         &mut self,
-        i: usize,
         t: &'static Talk,
         page: usize,
         x: f32,
