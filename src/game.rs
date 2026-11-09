@@ -3,6 +3,9 @@
 //! 世界地図で時代と地域を選んで転移し、その時代の街のミニマップを移動して
 //! 人物に会い、出来事を観察する。出会った人物と観察した出来事は図鑑
 //! （人物一覧表・年表・出来事集）に記録される。
+mod intro;
+use intro::{restore_speech, Target};
+
 use crate::{
     gfx::{Font, Gfx, Texture},
     history::*,
@@ -92,6 +95,10 @@ enum Overlay {
     TrialResult(usize, usize),
     /// 秘宝の説明（時代）
     Treasure(usize),
+    /// はじめのおはなし（ページ）
+    Story(usize),
+    /// 時空の復元力のはじめての説明（会った人物）
+    Restore(usize),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -120,6 +127,10 @@ enum Act {
     Answer(usize),
     TrialNext,
     Treasure(usize),
+    Story(usize),
+    StoryBack,
+    StorySkip,
+    TipsOff,
 }
 
 struct Button {
@@ -137,9 +148,26 @@ struct Journal {
     seen: Vec<bool>,
     /// 試練を突破して手に入れた秘宝（時代ごと）
     treasures: Vec<bool>,
+    /// 導入の進み具合（FLAG_*）
+    flags: u8,
 }
 
-const MAGIC: &[u8; 8] = b"YYHIST\x03\0";
+/// はじめのおはなしを見た
+const FLAG_INTRO: u8 = 1;
+/// 時空の復元力の説明を見た
+const FLAG_RESTORE: u8 = 2;
+/// 地図の上を移動した
+const FLAG_MOVED: u8 = 4;
+/// 図鑑を開いた
+const FLAG_CODEX: u8 = 8;
+/// クロノの案内を出さない
+const FLAG_TIPS_OFF: u8 = 128;
+/// 導入をすべて済ませた
+const FLAGS_DONE: u8 = FLAG_INTRO | FLAG_RESTORE | FLAG_MOVED | FLAG_CODEX;
+
+const MAGIC: &[u8; 8] = b"YYHIST\x04\0";
+/// 導入の進み具合の無い前の版の記録
+const MAGIC_V3: &[u8; 8] = b"YYHIST\x03\0";
 /// 秘宝の無い前の版の記録
 const MAGIC_V2: &[u8; 8] = b"YYHIST\x02\0";
 
@@ -159,6 +187,7 @@ impl Journal {
             met: vec![false; PEOPLE.len()],
             seen: vec![false; EVENTS.len()],
             treasures: vec![false; ERAS.len()],
+            flags: 0,
         }
     }
     fn bytes(&self) -> Vec<u8> {
@@ -167,6 +196,7 @@ impl Journal {
         b.push(self.place as u8);
         b.push(bits(&self.visited));
         b.push(bits(&self.treasures));
+        b.push(self.flags);
         let ids = |list: &mut Vec<u8>, ids: Vec<&str>| {
             list.extend_from_slice(&(ids.len() as u16).to_le_bytes());
             for id in ids {
@@ -199,8 +229,10 @@ impl Journal {
     fn read(b: &[u8]) -> Result<Self, String> {
         let invalid =
             || "YYHistoryの記録として読み込めません。現在の記録はそのままです。".to_string();
-        let v3 = b.len() >= 8 && &b[..8] == MAGIC;
-        if b.len() < 19 || b.len() > 65536 || !(v3 || &b[..8] == MAGIC_V2) {
+        let head = if b.len() >= 8 { &b[..8] } else { &[][..] };
+        let v4 = head == MAGIC;
+        let v3 = v4 || head == MAGIC_V3;
+        if b.len() < 19 || b.len() > 65536 || !(v3 || head == MAGIC_V2) {
             return Err(invalid());
         }
         let end = b.len() - 4;
@@ -218,7 +250,8 @@ impl Journal {
             return Err(invalid());
         }
         let treasures = (0..ERAS.len()).map(|i| tb & (1 << i) != 0).collect();
-        let mut at = if v3 { 12 } else { 11 };
+        let stored_flags = if v4 { Some(b[12]) } else { None };
+        let mut at = 11 + v3 as usize + v4 as usize;
         let mut list = |find: &dyn Fn(&str) -> Option<usize>, n_all: usize| {
             if at + 2 > end {
                 return Err(invalid());
@@ -249,6 +282,9 @@ impl Journal {
         if at != end {
             return Err(invalid());
         }
+        // 前の版の記録：もう旅をしていれば導入は済んだものとする
+        let played = met.iter().chain(&seen).any(|x| *x);
+        let flags = stored_flags.unwrap_or(if played { FLAGS_DONE } else { 0 });
         Ok(Self {
             era,
             place,
@@ -256,6 +292,7 @@ impl Journal {
             met,
             seen,
             treasures,
+            flags,
         })
     }
 }
@@ -310,6 +347,12 @@ pub struct Game {
     travel: Option<Travel>,
     /// この起動中に試練の案内を出した時代
     trial_offered: Vec<bool>,
+    /// おはなしのページを開いてからの時間
+    story_t: f32,
+    /// 時空の復元力の演出（会った人物, 経過時間）
+    restore_fx: Option<(usize, f32)>,
+    /// クロノの案内が指す場所（この描画で見つけたもの）
+    targets: Vec<(Target, [f32; 4])>,
     voice: bool,
     dirty: bool,
     save_in: f32,
@@ -329,7 +372,7 @@ impl Game {
         let world = gfx.create_texture(w, h, &data).expect("world texture");
         let journal = Journal::new();
         let p = &ERAS[0].places[ERAS[0].start];
-        let mut g = Self {
+        let g = Self {
             gfx,
             world,
             journal,
@@ -356,12 +399,14 @@ impl Game {
             avatar: (p.x, p.y),
             travel: None,
             trial_offered: vec![false; ERAS.len()],
+            story_t: 0.,
+            restore_fx: None,
+            targets: vec![],
             voice: platform::voice_enabled(),
             dirty: false,
             save_in: 0.,
         };
         platform::load_slot(0);
-        g.notify("行き先の時代を選び、「転移する」でその時代へ渡ろう。");
         g
     }
 
@@ -452,8 +497,24 @@ impl Game {
 
     /// 会話や観察を閉じたとき：その時代の情報がそろったら試練を始める
     fn close_overlay(&mut self) {
-        self.overlay = Overlay::None;
+        let prev = std::mem::replace(&mut self.overlay, Overlay::None);
         platform::speak("");
+        if let Overlay::Meet(i, _) = prev {
+            // 話した記憶は、時空の復元力で歴史から消える
+            if self.journal.flags & FLAG_RESTORE == 0 {
+                self.overlay = Overlay::Restore(i);
+                self.story_t = 0.;
+                if self.voice {
+                    platform::speak(&restore_speech(i));
+                }
+                return;
+            }
+            self.restore_fx = Some((i, 0.));
+        }
+        if let Overlay::Restore(_) = prev {
+            self.journal.flags |= FLAG_RESTORE;
+            self.change();
+        }
         let era = self.journal.era;
         if self.mode == Mode::Field
             && self.era_complete(era)
@@ -523,6 +584,21 @@ impl Game {
     }
 
     fn update(&mut self, dt: f32) {
+        self.story_t += dt;
+        if let Some((_, t)) = &mut self.restore_fx {
+            *t += dt;
+            if *t > intro::RESTORE_FX_SECS {
+                self.restore_fx = None;
+            }
+        }
+        // はじめて遊ぶとき：記録の読み込みを少し待ってから、はじめのおはなしを見せる
+        if self.journal.flags & FLAG_INTRO == 0
+            && self.mode == Mode::Atlas
+            && self.overlay == Overlay::None
+            && self.clock > 0.5
+        {
+            self.open_story(0);
+        }
         if self.mode == Mode::Shift {
             self.shift_t += dt;
             if self.shift_t >= 1.6 {
@@ -553,6 +629,7 @@ impl Game {
                 self.avatar = *tr.points.last().unwrap();
                 self.travel = None;
                 self.journal.place = target;
+                self.journal.flags |= FLAG_MOVED;
                 self.scroll[Scroll::Panel as usize] = 0.;
                 self.change();
                 let place = &ERAS[self.journal.era].places[target];
@@ -712,6 +789,10 @@ impl Game {
                 self.pick = self.journal.era;
             }
             Act::Codex => {
+                if self.journal.flags & FLAG_CODEX == 0 {
+                    self.journal.flags |= FLAG_CODEX;
+                    self.change();
+                }
                 self.mode = Mode::Codex;
                 self.overlay = Overlay::None;
                 self.scroll[Scroll::Codex as usize] = 0.;
@@ -746,6 +827,13 @@ impl Game {
                 }
                 Overlay::None => (),
                 Overlay::TrialIntro(era) => self.act(Act::Begin(era)),
+                Overlay::Story(page) => {
+                    if page + 1 < intro::PAGES.len() {
+                        self.open_story(page + 1);
+                    } else {
+                        self.finish_story();
+                    }
+                }
                 Overlay::Trial(_, _, Some(_), _) => self.act(Act::TrialNext),
                 Overlay::Trial(..) => (),
                 _ => self.close_overlay(),
@@ -812,6 +900,20 @@ impl Game {
             Act::Treasure(era) => {
                 self.overlay = Overlay::Treasure(era);
                 self.scroll[Scroll::Overlay as usize] = 0.;
+            }
+            Act::Story(page) => self.open_story(page),
+            Act::StoryBack => {
+                if let Overlay::Story(page) = self.overlay {
+                    self.open_story(page.saturating_sub(1));
+                }
+            }
+            Act::StorySkip => self.finish_story(),
+            Act::TipsOff => {
+                self.journal.flags ^= FLAG_TIPS_OFF;
+                self.change();
+                if self.journal.flags & FLAG_TIPS_OFF != 0 {
+                    self.notify("クロノの案内を消しました。「使い方」からまた表示できます。");
+                }
             }
             Act::Tab(t) => {
                 self.tab = t;
@@ -950,6 +1052,15 @@ impl Game {
                     }
                     return;
                 }
+                if let Overlay::Story(_) = self.overlay {
+                    match k {
+                        27 => self.act(Act::StorySkip),
+                        37 | 65 => self.act(Act::StoryBack),
+                        13 | 32 | 39 | 68 => self.act(Act::Next),
+                        _ => (),
+                    }
+                    return;
+                }
                 if let Overlay::Trial(_, _, None, _) = self.overlay {
                     match k {
                         49..=52 => return self.act(Act::Answer((k - 49) as usize)),
@@ -1046,8 +1157,8 @@ impl Game {
         }
         self.searching = false;
         if self.overlay != Overlay::None {
-            // 会話の枠の外を押したら次へ進む
-            if let Overlay::Meet(..) = self.overlay {
+            // 会話・おはなしの枠の外を押したら次へ進む
+            if let Overlay::Meet(..) | Overlay::Story(_) | Overlay::Restore(_) = self.overlay {
                 self.act(Act::Next);
             }
             return;
@@ -1232,6 +1343,7 @@ impl Game {
     fn render(&mut self) {
         self.buttons.clear();
         self.scroll_areas.clear();
+        self.targets.clear();
         let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
         self.gfx.begin(NIGHT);
         self.gfx.set_screen_xform();
@@ -1255,6 +1367,10 @@ impl Game {
             Mode::Codex => self.codex_ui(),
         }
         self.top_bar();
+        if self.overlay == Overlay::None && self.mode != Mode::Shift {
+            self.restore_ui();
+            self.tip_ui();
+        }
         if self.overlay != Overlay::None || self.mode == Mode::Shift {
             self.buttons.clear();
             self.scroll_areas.clear();
@@ -1269,11 +1385,16 @@ impl Game {
             Overlay::Trial(era, q, pick, score) => self.trial_ui(era, q, pick, score),
             Overlay::TrialResult(era, score) => self.trial_result_ui(era, score),
             Overlay::Treasure(era) => self.treasure_ui(era),
+            Overlay::Story(page) => self.story_ui(page),
+            Overlay::Restore(i) => self.restore_explain_ui(i),
         }
         if self.mode == Mode::Shift {
             self.shift_ui();
         }
-        if self.toast_left > 0. && self.mode != Mode::Shift {
+        if self.toast_left > 0.
+            && self.mode != Mode::Shift
+            && !matches!(self.overlay, Overlay::Story(_) | Overlay::Restore(_))
+        {
             let tw = (w * 0.55).min(640.);
             let tx = (w - tw) / 2.;
             let ty = if self.gfx.compact {
@@ -1324,15 +1445,7 @@ impl Game {
             GOLD,
         );
         if !compact {
-            self.text(
-                "時空を渡り、歴史に出会う",
-                20.,
-                40.,
-                220.,
-                16.,
-                Font::Small,
-                MUTED,
-            );
+            self.text("時空探偵の事件簿", 20., 40., 220., 16., Font::Small, MUTED);
         }
         let bh = if compact { 32. } else { 36. };
         let by = (top - bh) / 2. - 1.;
@@ -1347,6 +1460,9 @@ impl Game {
         ];
         for (label, a, on) in tabs {
             self.button(label, [x, by, 96., bh], a, on);
+            if let Act::Codex = a {
+                self.targets.push((Target::Codex, [x, by, 96., bh]));
+            }
             x += 104.;
         }
         if self.journal.visited.iter().any(|v| *v) && self.mode != Mode::Field {
@@ -1685,6 +1801,8 @@ impl Game {
             Act::Shift(self.pick, None),
             true,
         );
+        self.targets
+            .push((Target::Shift, [x1 - 220., y0 + 50., 200., 48.]));
         if !compact {
             self.text(
                 "Enter でも転移できます",
@@ -2076,6 +2194,8 @@ impl Game {
                 self.gfx.stroke_circle(bx, y - 16., 9. * b, 1.5, TEXT);
                 self.text("！", bx - 9., y - 25., 18., 18., Font::NormalCenter, TEXT);
             }
+            self.targets
+                .push((Target::Place(i), [x - 22., y - 22., 44., 44.]));
             self.buttons.push(Button {
                 rect: [x - 22., y - 22., 44., 44.],
                 act: Act::Goto(i),
@@ -2280,6 +2400,7 @@ impl Game {
                     rect: rr,
                     act: Act::Meet(i),
                 });
+                self.targets.push((Target::Person(i), rr));
                 y += 56.;
             }
             y += 8.;
@@ -2352,6 +2473,7 @@ impl Game {
                     rect: rr,
                     act: Act::Observe(i),
                 });
+                self.targets.push((Target::Event(i), rr));
                 y += 52.;
             }
         }
@@ -4053,7 +4175,7 @@ impl Game {
             Font::TitleMid,
             GOLD,
         );
-        let body = "1　世界地図で行き先の時代を選び、「転移する」でその時代へ渡ります。\n\n2　時代の地図では、場所を押すと道をたどって移動します。矢印キーでも移動できます。「人」の印はまだ会っていない人物、「！」はまだ観察していない出来事のある場所です。\n\n3　人物に「会う」と人物一覧表に、出来事を「観察」すると出来事集と年表に記録されます。\n\n4　その時代の人物と出来事をすべて集めると「アカシックレコードの試練」が始まります。時代についての四択問題5問に全問正解すると、その時代にゆかりのある実在の品が「秘宝」として手に入ります。何度でも挑み直せます。\n\n5　図鑑では、人物一覧表・年表・出来事集・秘宝を見返せます。「未発見も表示」をONにすると、まだ見つけていない項目も読めます（学習用）。\n\n―― 内容の正確さについて ――\n年代・人物・出来事は、各項目に示した史料と研究に基づいてまとめています。日付に諸説あるものや史料によって食い違うものは本文に記しています。和暦の月日は当時の暦（旧暦）のままです。\n人物の言葉は、事実を本人の語りとして再構成した教材であり、「」で示した史料の引用を除いて実際の発言ではありません。人物がいる場所は、その人物にゆかりのある場所です。地図は位置関係を示す概略図で、建物の形や距離は正確ではありません。肖像や場面の画像は、時代考証に基づくイメージ（想像図を含む）です。\n\nF2 図鑑 ／ F3 使い方 ／ F11 全画面 ／ Esc 戻る ／ Enter 次へ・転移";
+        let body = "あなたは歴史のなぞを追う「時空探偵」。タイムマシンで昔の時代へ行き、何が起きたのかを調べます。歴史上の人物と話すこともできますが、歴史を変えることはできません。探偵との会話は「時空の復元力」によって歴史から消えてしまうからです。（時空探偵とナビのクロノは物語のキャラクターです。出会う人物と出来事は本当の歴史です）\n\n1　世界地図で行き先の時代を選び、「転移する」でその時代へ渡ります。\n\n2　時代の地図では、場所を押すと道をたどって移動します。矢印キーでも移動できます。「人」の印はまだ会っていない人物、「！」はまだ観察していない出来事のある場所です。\n\n3　人物に「会う」と人物一覧表に、出来事を「観察」すると出来事集と年表に記録されます。\n\n4　その時代の人物と出来事をすべて集めると「アカシックレコードの試練」が始まります。時代についての四択問題5問に全問正解すると、その時代にゆかりのある実在の品が「秘宝」として手に入ります。何度でも挑み直せます。\n\n5　図鑑では、人物一覧表・年表・出来事集・秘宝を見返せます。「未発見も表示」をONにすると、まだ見つけていない項目も読めます（学習用）。\n\n―― 内容の正確さについて ――\n年代・人物・出来事は、各項目に示した史料と研究に基づいてまとめています。日付に諸説あるものや史料によって食い違うものは本文に記しています。和暦の月日は当時の暦（旧暦）のままです。\n人物の言葉は、事実を本人の語りとして再構成した教材であり、「」で示した史料の引用を除いて実際の発言ではありません。人物がいる場所は、その人物にゆかりのある場所です。地図は位置関係を示す概略図で、建物の形や距離は正確ではありません。肖像や場面の画像は、時代考証に基づくイメージ（想像図を含む）です。\n\nF2 図鑑 ／ F3 使い方 ／ F11 全画面 ／ Esc 戻る ／ Enter 次へ・転移";
         let by = y + 72.;
         let bh = ch - 72. - 62.;
         self.scroll_areas.push(([x, by, cw, bh], Scroll::Overlay));
@@ -4064,8 +4186,25 @@ impl Game {
         self.gfx.clip_end();
         self.scroll_max[Scroll::Overlay as usize] = th - bh + 10.;
         self.button(
+            "はじめのおはなし",
+            [x + 30., y + ch - 50., 190., 36.],
+            Act::Story(0),
+            false,
+        );
+        let tips_off = self.journal.flags & FLAG_TIPS_OFF != 0;
+        self.button(
+            if tips_off {
+                "クロノの案内：OFF"
+            } else {
+                "クロノの案内：ON"
+            },
+            [x + 230., y + ch - 50., 190., 36.],
+            Act::TipsOff,
+            !tips_off,
+        );
+        self.button(
             "旅に戻る",
-            [x + cw / 2. - 120., y + ch - 50., 240., 36.],
+            [x + cw - 230., y + ch - 50., 200., 36.],
             Act::Close,
             true,
         );
@@ -4398,6 +4537,13 @@ fn icon(g: &mut Gfx, kind: Kind, x: f32, y: f32, s: f32) {
 mod tests {
     use super::*;
 
+    /// 導入を済ませた状態のゲーム（ほかの機能を調べるため）
+    fn game(gfx: Gfx) -> Game {
+        let mut g = Game::new(gfx);
+        g.journal.flags = FLAGS_DONE;
+        g
+    }
+
     fn run(g: &mut Game, secs: f32) {
         let mut t = 0.;
         while t < secs {
@@ -4427,7 +4573,7 @@ mod tests {
 
     #[test]
     fn every_person_and_event_can_be_found() {
-        let mut g = Game::new(Gfx::new(1600, 900));
+        let mut g = game(Gfx::new(1600, 900));
         for era in 0..ERAS.len() {
             g.act(Act::PickEra(era));
             g.act(Act::Shift(era, None));
@@ -4501,7 +4647,7 @@ mod tests {
 
     #[test]
     fn trial_needs_everything_and_a_perfect_score() {
-        let mut g = Game::new(Gfx::new(1600, 900));
+        let mut g = game(Gfx::new(1600, 900));
         g.act(Act::Shift(EDO, None));
         run(&mut g, 2.);
         g.act(Act::TrialIntro(EDO));
@@ -4542,13 +4688,122 @@ mod tests {
     }
 
     #[test]
+    fn first_launch_tells_the_story_then_guides() {
+        let mut g = Game::new(Gfx::new(1600, 900));
+        run(&mut g, 1.);
+        assert_eq!(g.overlay, Overlay::Story(0));
+        for page in 1..intro::PAGES.len() {
+            g.handle(Ev::Key(13, true));
+            assert_eq!(g.overlay, Overlay::Story(page));
+            g.render();
+        }
+        g.act(Act::StoryBack);
+        assert_eq!(g.overlay, Overlay::Story(intro::PAGES.len() - 2));
+        g.handle(Ev::Key(13, true));
+        g.handle(Ev::Key(13, true));
+        assert_eq!(g.overlay, Overlay::None);
+        assert!(g.journal.flags & FLAG_INTRO != 0);
+        run(&mut g, 1.);
+        assert_eq!(g.overlay, Overlay::None, "the story is shown only once");
+        // クロノが「転移する」を指す
+        assert_eq!(g.current_tip().unwrap().1, Some(intro::Target::Shift));
+        assert!(g.targets.iter().any(|(t, _)| *t == intro::Target::Shift));
+        g.act(Act::Shift(ROME, None));
+        run(&mut g, 2.);
+        // フォルムにはアントニウスがいる
+        let antony = person_index("antony").unwrap();
+        assert_eq!(
+            g.current_tip().unwrap().1,
+            Some(intro::Target::Person(antony))
+        );
+        g.act(Act::Meet(antony));
+        for _ in 0..PEOPLE[antony].lines.len() {
+            g.act(Act::Next);
+        }
+        // はじめての会話のあとは、時空の復元力の説明
+        assert_eq!(g.overlay, Overlay::Restore(antony));
+        g.render();
+        g.act(Act::Next);
+        assert_eq!(g.overlay, Overlay::None);
+        assert!(g.journal.flags & FLAG_RESTORE != 0);
+        // 2回目からは、操作を止めない短い演出
+        let cicero = person_index("cicero").unwrap();
+        g.act(Act::Goto(place_index(ROME, "palatine").unwrap()));
+        run(&mut g, 10.);
+        g.act(Act::Meet(cicero));
+        for _ in 0..PEOPLE[cicero].lines.len() {
+            g.act(Act::Next);
+        }
+        assert_eq!(g.overlay, Overlay::None);
+        assert!(g.restore_fx.is_some());
+        g.render();
+        run(&mut g, intro::RESTORE_FX_SECS + 0.2);
+        assert!(g.restore_fx.is_none());
+        // 次は出来事の場所へ案内
+        assert!(matches!(
+            g.current_tip().unwrap().1,
+            Some(intro::Target::Place(_))
+        ));
+        g.act(Act::Goto(place_index(ROME, "forum").unwrap()));
+        run(&mut g, 10.);
+        assert!(matches!(
+            g.current_tip().unwrap().1,
+            Some(intro::Target::Event(_))
+        ));
+        g.act(Act::Observe(event_index("lupercalia").unwrap()));
+        g.act(Act::Close);
+        assert_eq!(g.current_tip().unwrap().1, Some(intro::Target::Codex));
+        g.act(Act::Codex);
+        assert!(g.current_tip().is_none());
+        // 導入の進み具合は保存される
+        let j = Journal::read(&g.journal.bytes()).unwrap();
+        assert_eq!(j.flags & FLAGS_DONE, FLAGS_DONE);
+    }
+
+    #[test]
+    fn story_can_be_skipped_and_replayed() {
+        let mut g = Game::new(Gfx::new(900, 420));
+        g.gfx.set_compact(true);
+        run(&mut g, 1.);
+        for page in 0..intro::PAGES.len() {
+            g.open_story(page);
+            g.render();
+        }
+        g.handle(Ev::Key(27, true));
+        assert_eq!(g.overlay, Overlay::None);
+        assert!(g.journal.flags & FLAG_INTRO != 0);
+        g.act(Act::Help);
+        g.render();
+        g.act(Act::Story(0));
+        assert_eq!(g.overlay, Overlay::Story(0));
+        g.act(Act::StorySkip);
+        g.act(Act::TipsOff);
+        assert!(g.current_tip().is_none());
+    }
+
+    #[test]
+    fn older_saves_skip_the_introduction() {
+        let mut j = Journal::new();
+        j.met[0] = true;
+        let mut b = j.bytes();
+        b.truncate(b.len() - 4);
+        b[..8].copy_from_slice(MAGIC_V3);
+        b.remove(12);
+        let hash = checksum(&b);
+        b.extend_from_slice(&hash.to_le_bytes());
+        assert_eq!(Journal::read(&b).unwrap().flags, FLAGS_DONE);
+    }
+
+    #[test]
     fn reads_saves_without_treasures() {
         let mut j = Journal::new();
         j.met[3] = true;
         j.visited[1] = true;
+        j.flags = FLAGS_DONE;
         let mut b = j.bytes();
         b.truncate(b.len() - 4);
         b[..8].copy_from_slice(MAGIC_V2);
+        b.remove(12);
         b.remove(11);
         let hash = checksum(&b);
         b.extend_from_slice(&hash.to_le_bytes());
@@ -4557,7 +4812,7 @@ mod tests {
 
     #[test]
     fn meeting_requires_being_there() {
-        let mut g = Game::new(Gfx::new(1600, 900));
+        let mut g = game(Gfx::new(1600, 900));
         let caesar = person_index("caesar").unwrap();
         g.act(Act::Meet(caesar));
         assert!(!g.journal.met[caesar]);
@@ -4583,7 +4838,7 @@ mod tests {
 
     #[test]
     fn arrow_keys_follow_roads() {
-        let mut g = Game::new(Gfx::new(1600, 900));
+        let mut g = game(Gfx::new(1600, 900));
         g.act(Act::Shift(ROME, None));
         run(&mut g, 2.);
         // フォルムから西へ：ポンペイウス劇場（道でつながる）かカピトリウム
@@ -4596,7 +4851,7 @@ mod tests {
     #[test]
     fn all_views_render_and_search_filters() {
         for (w, h, c) in [(1600, 900, false), (1360, 720, false), (900, 420, true)] {
-            let mut g = Game::new(Gfx::new(w, h));
+            let mut g = game(Gfx::new(w, h));
             g.gfx.set_compact(c);
             g.frame(&[], 0.016, true);
             for era in 0..ERAS.len() {
