@@ -895,3 +895,64 @@ impl Game {
         });
     }
 }
+
+// ------------------------------------------------------------------ クロノのことばメモ
+impl Game {
+    /// ことばメモの高さ（用語が無ければ0）
+    pub(super) fn memo_h(&mut self, terms: &[usize], w: f32) -> f32 {
+        if terms.is_empty() {
+            return 0.;
+        }
+        let tw = w - 92.;
+        let mut h = 38.;
+        for &i in terms {
+            h += 24. + self.gfx.measure_h(glossary::TERMS[i].kid, Font::Normal, tw) + 8.;
+        }
+        h + 4.
+    }
+
+    /// クロノが用語をやさしく説明する。描いた高さを返す。説明した用語は図鑑の「ことば」に残る
+    pub(super) fn memo(&mut self, terms: &[usize], x: f32, y: f32, w: f32) -> f32 {
+        let h = self.memo_h(terms, w);
+        if h == 0. {
+            return 0.;
+        }
+        self.gfx
+            .fill_round(x, y, x + w, y + h, 12., [0.98, 0.96, 0.89, 0.97]);
+        self.gfx
+            .stroke_round(x, y, x + w, y + h, 12., 1.5, alpha(CYAN, 0.9));
+        self.chrono(x + 38., y + 44., 20., false);
+        self.text(
+            "クロノの ことばメモ",
+            x + 76.,
+            y + 8.,
+            w - 90.,
+            22.,
+            Font::Normal,
+            [0.15, 0.45, 0.60, 1.],
+        );
+        let tw = w - 92.;
+        let mut yy = y + 36.;
+        let mut learned = false;
+        for &i in terms {
+            let t = &glossary::TERMS[i];
+            self.text(
+                &format!("{}（{}）", t.name(), t.kana),
+                x + 76.,
+                yy,
+                tw,
+                22.,
+                Font::Big,
+                INK,
+            );
+            let eh = self.gfx.measure_h(t.kid, Font::Normal, tw);
+            self.text(t.kid, x + 76., yy + 24., tw, eh, Font::Normal, INK_SOFT);
+            yy += 24. + eh + 8.;
+            learned |= !std::mem::replace(&mut self.journal.terms[i], true);
+        }
+        if learned {
+            self.change();
+        }
+        h
+    }
+}

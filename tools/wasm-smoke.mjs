@@ -34,9 +34,9 @@ assert.ok(textures[1].w>=720);
 mkdirSync(new URL('../output/review/',import.meta.url),{recursive:true});
 writeFileSync(new URL('../output/review/world-frame.json',import.meta.url),JSON.stringify({width:Math.round(1360/uiScale),height:Math.round(720/uiScale),textures,frame}));
 // 転移してローマのフォルムに着く
-key(13);has('時 空 転 移');tick(40);has('フォルム・ロマヌム');has('この場所にいる人物');
+key(13);has('時 空 転 移');tick(70);has('フォルム・ロマヌム');has('この場所にいる人物');
 // 人物に会う → 人物一覧表に登録
-click('マルクス・アントニウス');has('わたしはマルクス・アントニウス');has('1 / 3');
+click('マルクス・アントニウス');has('わたしはマルクス・アントニウス');has('1 / 3');has('クロノの ことばメモ');has('執政官（しっせいかん）');
 key(13);has('2 / 3');key(13);key(13);has('じくうの ふくげんりょくだ');key(13);has('人物 1/43');
 // 出来事を観察する
 click('ルペルカリア祭の冠');has('観察');has('史料：');key(27);has('出来事 1/45');
@@ -45,6 +45,7 @@ tick(20);assert.ok(saved?.length>20,'autosave');
 key(0x71);has('人物一覧表');has('No.001');has('マルクス・アントニウス');has('？？？');
 click('年表');has('紀元前44年2月15日');has('ルペルカリア祭の冠');
 click('出来事集');has('ルペルカリア祭の冠');
+click('ことば');has('クロノに おそわった ことば');
 // 記録の読み込み
 const before=Buffer.from(saved);const ptr=wasm.yy_alloc(saved.length);new Uint8Array(wasm.memory.buffer,ptr,saved.length).set(saved);wasm.yy_loaded(ptr,saved.length);tick();has('旅の記録を読み込みました');has('人物 1/43');
 tick(20);assert.equal(Buffer.from(saved).toString('hex'),before.toString('hex'));
@@ -56,7 +57,7 @@ assert.ok(wasm.yy_search_box(2)>100);
  list(['caesar','calpurnia','brutus','cassius','antony','cicero']);list(['lupercalia','ides','capitol_retreat','tellus_senate','funeral']);
  let h=2166136261;for(const v of b){h=Math.imul(h^v,16777619)>>>0;}b.push(h&255,(h>>8)&255,(h>>16)&255,h>>>24);
  const p=wasm.yy_alloc(b.length);new Uint8Array(wasm.memory.buffer,p,b.length).set(b);wasm.yy_loaded(p,b.length);tick();}
-key(0x1b);key(13);tick(40);has('アカシックレコードの試練に挑む');click('アカシックレコードの試練に挑む');has('試練を始める');
+key(0x1b);key(13);tick(70);has('アカシックレコードの試練に挑む');click('アカシックレコードの試練に挑む');has('試練を始める');
 key(13);has('第1問 / 5');
 for(const k of [2,3,2,1,4]){key(48+k);has('正解！');key(13);}
 has('5問中 5問 正解');has('デナリウス銀貨');has('秘宝 1/7');
