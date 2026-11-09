@@ -11,5 +11,5 @@ root = Path(__file__).resolve().parents[1] / "dist"
 handler = partial(SimpleHTTPRequestHandler, directory=str(root))
 
 if __name__ == "__main__":
-    print("YYHistory preview: http://localhost:8765/", flush=True)
+    print("時空事件簿 preview: http://localhost:8765/", flush=True)
     ThreadingHTTPServer(("127.0.0.1", 8765), handler).serve_forever()

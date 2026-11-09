@@ -2,7 +2,7 @@
 name = "yyhistory"
 version = "0.1.0"
 edition = "2021"
-description = "時代と地域を選んで歴史の現場へ転移し、人物に会い出来事を観察する教育ゲーム（ブラウザ版：Rust → WebAssembly／Windows 版：Rust + Direct3D11 / Direct2D）"
+description = "時空事件簿 — 時代と地域を選んで歴史の現場へ転移し、人物に会い出来事を観察する教育ゲーム（ブラウザ版：Rust → WebAssembly／Windows 版：Rust + Direct3D11 / Direct2D）"
 build = "build.rs"
 
 [features]

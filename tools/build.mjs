@@ -27,4 +27,4 @@ const copyImages=(from,to)=>{if(!existsSync(from))return;for(const name of readd
 copyImages(path.join(root,'assets/images'),path.join(root,'dist/images'));
 checkResult(spawnSync(process.execPath,['tools/package_wasm.mjs','dist/yyhistory.wasm'],{cwd:root,stdio:'inherit'}), 'WASM packaging');
 writeFileSync(new URL('../dist/_headers',import.meta.url),'/*.wasm\n  Content-Type: application/wasm\n  Cache-Control: no-cache\n/*.js\n  Cache-Control: no-cache\n/wasm-manifest.json\n  Cache-Control: no-cache\n/images/*\n  Cache-Control: no-cache\n/\n  Cache-Control: no-cache\n');
-console.log('YYHistory browser build: dist/');
+console.log('時空事件簿 browser build: dist/');

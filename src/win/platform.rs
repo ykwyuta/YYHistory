@@ -182,7 +182,7 @@ fn from_wide(buf: &[u16]) -> String {
 
 fn filter() -> &'static str {
     t!(
-        "YYHistoryの記録 (*.yyhsav)\0*.yyhsav\0すべてのファイル (*.*)\0*.*\0\0",
+        "時空事件簿の記録 (*.yyhsav)\0*.yyhsav\0すべてのファイル (*.*)\0*.*\0\0",
         "YYHistory save (*.yyhsav)\0*.yyhsav\0All files (*.*)\0*.*\0\0",
         "历史相册存档 (*.yyhsav)\0*.yyhsav\0所有文件 (*.*)\0*.*\0\0"
     )

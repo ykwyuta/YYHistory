@@ -1,5 +1,5 @@
 import { createNarrator, bindNarratorGestures } from './speech.mjs';
-// YYHistory — ブラウザ側のつなぎ目
+// 時空事件簿（YYHistory）— ブラウザ側のつなぎ目
 // Rust（WebAssembly）の描画命令を WebGL2 と Canvas2D に、ブラウザの入力を Rust に渡す。
 
 const glCanvas = document.getElementById('gl');
@@ -24,7 +24,7 @@ const FAMILIES = [
 ];
 const LANG_CODES = ['ja', 'en', 'zh'];
 const DISPLAY_FAMILIES = ['"Yu Mincho", "Noto Serif JP", serif', 'Georgia, "Times New Roman", serif', '"Noto Serif SC", "SimSun", serif'];
-const TITLES = ['YYHistory — 時空を渡り、歴史に出会う', 'YYHistory — 時空を渡り、歴史に出会う', 'YYHistory — 時空を渡り、歴史に出会う'];
+const TITLES = ['時空事件簿 — 時空探偵が歴史のなぞを追う', '時空事件簿 — 時空探偵が歴史のなぞを追う', '时空事件簿'];
 const LANG_KEY = 'yyhistory.lang';
 // 起動時の言語：URL の ?lang=、保存した設定、ブラウザの言語の順
 function detectLang() {

@@ -288,9 +288,9 @@ impl Game {
         let compact = self.gfx.compact;
         self.starfield(0.97);
         let cy = h * if compact { 0.20 } else { 0.26 };
-        self.text("YYHistory", 0., cy - 40., w, 60., Font::Title, GOLD);
+        self.text("時空事件簿", 0., cy - 40., w, 60., Font::Title, GOLD);
         self.text(
-            "じくう たんていの じけんぼ",
+            "じくう じけんぼ ― れきしの なぞを おう じくう たんてい",
             0.,
             cy + 26.,
             w,

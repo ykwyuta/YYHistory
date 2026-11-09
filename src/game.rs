@@ -265,7 +265,7 @@ impl Journal {
     }
     fn read(b: &[u8]) -> Result<Self, String> {
         let invalid =
-            || "YYHistoryの記録として読み込めません。現在の記録はそのままです。".to_string();
+            || "時空事件簿の記録として読み込めません。現在の記録はそのままです。".to_string();
         let head = if b.len() >= 8 { &b[..8] } else { &[][..] };
         let v5 = head == MAGIC;
         let v4 = v5 || head == MAGIC_V4;
@@ -535,7 +535,7 @@ impl Game {
             0,
             &self.journal.bytes(),
             &format!(
-                "YYHistory 人物{}/{} 出来事{}/{}",
+                "時空事件簿 人物{}/{} 出来事{}/{}",
                 self.met_count(None),
                 PEOPLE.len(),
                 self.seen_count(None),
@@ -1557,7 +1557,7 @@ impl Game {
         self.gfx
             .fill_rect(0., top - 2., w, top - 1., alpha(GOLD, 0.7));
         self.text(
-            "YYHistory",
+            "時空事件簿",
             18.,
             if compact { 6. } else { 8. },
             200.,
@@ -1566,7 +1566,7 @@ impl Game {
             GOLD,
         );
         if !compact {
-            self.text("時空探偵の事件簿", 20., 40., 220., 16., Font::Small, MUTED);
+            self.text("じくう じけんぼ", 20., 40., 220., 16., Font::Small, MUTED);
         }
         let bh = if compact { 32. } else { 36. };
         let by = (top - bh) / 2. - 1.;
@@ -4419,7 +4419,7 @@ impl Game {
     fn help_ui(&mut self) {
         let [x, y, cw, ch] = self.card(820., 600.);
         self.text(
-            "時空を渡り、歴史に出会う",
+            "時空事件簿",
             x + 30.,
             y + 20.,
             cw - 60.,
