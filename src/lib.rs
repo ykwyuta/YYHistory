@@ -22,6 +22,7 @@ pub mod platform;
 #[path = "win/platform.rs"]
 pub mod platform;
 mod speech;
+mod talk;
 #[cfg(any(not(windows), all(test, feature = "headless")))]
 mod web;
 #[cfg(all(windows, not(all(test, feature = "headless"))))]
