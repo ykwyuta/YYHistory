@@ -6,19 +6,6 @@
 //! 辞書に無い熟語が残っていないかをテストで確かめる。
 use super::*;
 
-/// クロノのことばメモの読み上げ（用語は読みがなで読む）
-pub fn memo_speech(terms: &[usize]) -> String {
-    if terms.is_empty() {
-        return String::new();
-    }
-    let mut s = String::from("クロノの ことばメモ。");
-    for &i in terms {
-        let t = &glossary::TERMS[i];
-        s += &format!("{}。{}", t.kana, t.kid);
-    }
-    s
-}
-
 /// 時代によって読みの違う地名（長安の東市・西市は「とうし・せいし」、
 /// 平安京は「ひがしのいち・にしのいち」）
 pub fn era_readings(era: usize, text: String) -> String {
@@ -60,29 +47,19 @@ pub fn meet_speech(i: usize, page: usize) -> String {
     era_readings(PEOPLE[i].era, {
         let p = &PEOPLE[i];
         let line = p.lines[page.min(p.lines.len() - 1)];
-        let (head, terms) = if page == 0 {
-            (
-                format!("{}。{}。", p.name, p.role),
-                glossary::find(&format!("{}{}", p.role, line)),
-            )
+        let head = if page == 0 {
+            format!("{}。{}。", p.name, p.role)
         } else {
-            (String::new(), glossary::find(line))
+            String::new()
         };
-        format!("{head}{line}{}", memo_speech(&terms))
+        format!("{head}{line}")
     })
 }
 
 pub fn observe_speech(i: usize) -> String {
     era_readings(EVENTS[i].era, {
         let e = &EVENTS[i];
-        let body = e.body.join("");
-        format!(
-            "{}。{}。{}{}",
-            e.date,
-            e.title,
-            body,
-            memo_speech(&glossary::find(&body))
-        )
+        format!("{}。{}。{}", e.date, e.title, e.body.join(""))
     })
 }
 
@@ -96,14 +73,7 @@ pub fn detail_speech(e: Entry) -> String {
             match e {
                 Entry::Person(i) => {
                     let p = &PEOPLE[i];
-                    format!(
-                        "{}。{}。{}。{}{}",
-                        p.name,
-                        p.life,
-                        p.role,
-                        p.bio,
-                        memo_speech(&glossary::find(p.bio))
-                    )
+                    format!("{}。{}。{}。{}", p.name, p.life, p.role, p.bio)
                 }
                 Entry::Event(i) => observe_speech(i),
             }
@@ -129,15 +99,12 @@ pub fn question_speech(era: usize, q: usize) -> String {
 pub fn answer_speech(era: usize, q: usize, pick: usize) -> String {
     era_readings(era, {
         let quiz = &QUIZZES[quizzes(era)[q]];
-        let terms = glossary::find(&format!("{}{}{}", quiz.q, quiz.choices.join(""), quiz.note));
         if pick == quiz.answer {
-            format!("正解。{}{}", quiz.note, memo_speech(&terms))
+            format!("正解。{}", quiz.note)
         } else {
             format!(
-                "不正解。正解は、{}。{}{}",
-                quiz.choices[quiz.answer],
-                quiz.note,
-                memo_speech(&terms)
+                "不正解。正解は、{}。{}",
+                quiz.choices[quiz.answer], quiz.note
             )
         }
     })
@@ -291,6 +258,9 @@ pub fn all_speech() -> Vec<String> {
         for page in 0..briefing::pages(era).len() {
             v.push(briefing::speech(era, page));
         }
+    }
+    for n in notes::NOTES {
+        v.push(format!("{}　{}", n.q, n.a.replace('\n', "")));
     }
     for page in 0..intro::PAGES.len() {
         v.push(story_speech(page));

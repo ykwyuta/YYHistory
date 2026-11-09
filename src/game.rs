@@ -11,9 +11,8 @@ use intro::{restore_speech, Target};
 
 use crate::{
     gfx::{Font, Gfx, Texture},
-    glossary,
     history::*,
-    images, platform, Ev,
+    images, notes, platform, Ev,
 };
 
 // ------------------------------------------------------------------ 色
@@ -141,8 +140,8 @@ enum Act {
     StorySkip,
     TipsOff,
     Replay,
-    /// ことばメモのページ送り
-    MemoPage(i32),
+    /// なぜ？ノートを開く・閉じる（ノートの番号）
+    Note(usize),
     /// クロノの時代の説明を読み直す
     Brief(usize),
     BriefBack,
@@ -173,8 +172,8 @@ struct Journal {
     treasures: Vec<bool>,
     /// 導入の進み具合（FLAG_*）
     flags: u8,
-    /// クロノに教わった用語
-    terms: Vec<bool>,
+    /// クロノに聞いた「なぜ？ノート」
+    notes: Vec<bool>,
 }
 
 /// はじめのおはなしを見た
@@ -190,7 +189,9 @@ const FLAG_TIPS_OFF: u8 = 128;
 /// 導入をすべて済ませた
 const FLAGS_DONE: u8 = FLAG_INTRO | FLAG_RESTORE | FLAG_MOVED | FLAG_CODEX;
 
-const MAGIC: &[u8; 8] = b"YYHIST\x05\0";
+const MAGIC: &[u8; 8] = b"YYHIST\x06\0";
+/// 用語メモ（廃止）を記録していた前の版
+const MAGIC_V5: &[u8; 8] = b"YYHIST\x05\0";
 /// 用語メモの無い前の版の記録
 const MAGIC_V4: &[u8; 8] = b"YYHIST\x04\0";
 /// 導入の進み具合の無い前の版の記録
@@ -215,7 +216,7 @@ impl Journal {
             seen: vec![false; EVENTS.len()],
             treasures: vec![false; ERAS.len()],
             flags: 0,
-            terms: vec![false; glossary::TERMS.len()],
+            notes: vec![false; notes::NOTES.len()],
         }
     }
     fn bytes(&self) -> Vec<u8> {
@@ -252,11 +253,11 @@ impl Journal {
         );
         ids(
             &mut b,
-            glossary::TERMS
+            notes::NOTES
                 .iter()
-                .zip(&self.terms)
+                .zip(&self.notes)
                 .filter(|(_, m)| **m)
-                .map(|(t, _)| t.name())
+                .map(|(n, _)| n.id)
                 .collect(),
         );
         let hash = checksum(&b);
@@ -267,7 +268,8 @@ impl Journal {
         let invalid =
             || "時空事件簿の記録として読み込めません。現在の記録はそのままです。".to_string();
         let head = if b.len() >= 8 { &b[..8] } else { &[][..] };
-        let v5 = head == MAGIC;
+        let v6 = head == MAGIC;
+        let v5 = v6 || head == MAGIC_V5;
         let v4 = v5 || head == MAGIC_V4;
         let v3 = v4 || head == MAGIC_V3;
         if b.len() < 19 || b.len() > 65536 || !(v3 || head == MAGIC_V2) {
@@ -317,10 +319,24 @@ impl Journal {
         };
         let met = list(&person_index, PEOPLE.len())?;
         let seen = list(&event_index, EVENTS.len())?;
-        let terms = if v5 {
-            list(&glossary::index, glossary::TERMS.len())?
+        let notes = if v6 {
+            list(&notes::index, notes::NOTES.len())?
         } else {
-            vec![false; glossary::TERMS.len()]
+            if v5 {
+                // 廃止した用語メモの一覧を読み飛ばす
+                if at + 2 > end {
+                    return Err(invalid());
+                }
+                let n = u16::from_le_bytes([b[at], b[at + 1]]) as usize;
+                at += 2;
+                for _ in 0..n {
+                    if at >= end || at + 1 + b[at] as usize > end {
+                        return Err(invalid());
+                    }
+                    at += 1 + b[at] as usize;
+                }
+            }
+            vec![false; notes::NOTES.len()]
         };
         if at != end {
             return Err(invalid());
@@ -336,7 +352,7 @@ impl Journal {
             seen,
             treasures,
             flags,
-            terms,
+            notes,
         })
     }
 }
@@ -405,10 +421,9 @@ pub struct Game {
     spoke_at: f32,
     /// いま開いている枠（🔊 ボタンを置く）
     card_rect: Option<[f32; 4]>,
-    /// ことばメモの何語目を見ているか（どの画面のメモか）
-    memo_page: usize,
+    /// 開いているなぜ？ノート（どの画面のノートか）
+    memo_open: Option<usize>,
     memo_for: Overlay,
-    memo_len: usize,
     /// ページを送ったら、その用語を読み上げる
     memo_turned: bool,
     /// 時代の説明を読み終えたら転移する先
@@ -466,9 +481,8 @@ impl Game {
             last_tip: None,
             spoke_at: -1.,
             card_rect: None,
-            memo_page: 0,
+            memo_open: None,
             memo_for: Overlay::None,
-            memo_len: 0,
             memo_turned: false,
             briefing_then: None,
             voice: platform::voice_enabled(),
@@ -976,10 +990,11 @@ impl Game {
                 }
             }
             Act::Replay => self.replay(),
-            Act::MemoPage(d) => {
-                if self.memo_len > 0 {
-                    let n = self.memo_len as i32;
-                    self.memo_page = (self.memo_page as i32 + d).rem_euclid(n) as usize;
+            Act::Note(i) => {
+                if self.memo_open == Some(i) {
+                    self.memo_open = None;
+                } else {
+                    self.memo_open = Some(i);
                     self.memo_turned = true;
                 }
             }
@@ -2336,11 +2351,11 @@ impl Game {
             Font::Small,
             GOLD,
         );
-        self.text(era.name, ix, y0 + 30., iw - 90., 26., Font::Big, TEXT);
-        self.speaker_button(ix + iw - 76., y0 + 26.);
+        self.text(era.name, ix, y0 + 30., iw, 26., Font::Big, TEXT);
+        self.speaker_button(ix + iw - 76., y0 + 52.);
         self.button(
             "せつめい",
-            [ix + iw - 160., y0 + 26., 78., 32.],
+            [ix + iw - 160., y0 + 52., 78., 32.],
             Act::Brief(ei),
             false,
         );
@@ -2362,9 +2377,9 @@ impl Game {
             CYAN,
         );
         self.gfx
-            .fill_rect(ix, y0 + 80., ix + iw, y0 + 81., alpha(EDGE, 0.8));
+            .fill_rect(ix, y0 + 88., ix + iw, y0 + 89., alpha(EDGE, 0.8));
         let foot = if compact { 52. } else { 60. };
-        let cy0 = y0 + 88.;
+        let cy0 = y0 + 92.;
         let cy1 = y1 - foot;
         self.scroll_areas
             .push(([x0, cy0, pw, cy1 - cy0], Scroll::Panel));
@@ -2641,11 +2656,7 @@ impl Game {
         let compact = self.gfx.compact;
         let line = p.lines[page.min(p.lines.len() - 1)];
         // はじめのページでは、肩書きに出てくる用語も説明する
-        let terms = glossary::find(&if page == 0 {
-            format!("{}{}", p.role, line)
-        } else {
-            line.to_string()
-        });
+        let terms = notes::for_person(p.id, page);
         let cw0 = 860.0f32.min(self.gfx.width as f32 - 32.);
         let head = if compact { 150. } else { 170. };
         let lh = (self.gfx.measure_h(line, Font::Big, cw0 - 92.) + 48.).max(96.);
@@ -2675,7 +2686,7 @@ impl Game {
         self.text(p.name, tx, y + 44., tw, 28., Font::Big, TEXT);
         self.text(p.native, tx, y + 74., tw, 18., Font::Small, MUTED);
         self.text(p.role, tx, y + 96., tw, 20., Font::Normal, CYAN);
-        // 言葉とことばメモ（入りきらなければ、なぞって読む）
+        // 言葉となぜ？ノート（入りきらなければ、なぞって読む）
         let by = y + head;
         let view_h = ch - head - 60.;
         self.scroll_areas
@@ -2764,7 +2775,7 @@ impl Game {
             need += 64.;
         }
         need += self.banner_h(i, tw);
-        let terms = glossary::find(&e.body.join(""));
+        let terms = notes::for_event(e.id);
         let mh = self.memo_h(&terms, tw);
         if mh > 0. {
             need += mh + 12.;
@@ -2931,7 +2942,7 @@ impl Game {
             ("年表", Tab::Timeline),
             ("出来事集", Tab::Events),
             ("秘宝", Tab::Treasures),
-            ("ことば", Tab::Words),
+            ("なぜ？ノート", Tab::Words),
         ];
         let tw = if compact { 96. } else { 136. };
         for (k, (label, t)) in tabs.iter().enumerate() {
@@ -3179,22 +3190,23 @@ impl Game {
         28. + (items.len().div_ceil(cols)) as f32 * (ch + 10.)
     }
 
+    /// 図鑑「なぜ？ノート」：クロノに聞いた疑問と答え
     fn codex_words(&mut self, y0: f32, w: f32, vy0: f32, vy1: f32) -> f32 {
         let q = self.query.clone();
-        let items: Vec<usize> = (0..glossary::TERMS.len())
+        let items: Vec<usize> = (0..notes::NOTES.len())
+            .filter(|i| self.filter.is_none_or(|f| notes::era(*i) == f))
             .filter(|i| {
-                let t = &glossary::TERMS[*i];
+                let n = &notes::NOTES[*i];
                 q.is_empty()
-                    || ((self.journal.terms[*i] || self.reveal)
-                        && contains(&[t.name(), t.kana, t.kid], &q))
+                    || ((self.journal.notes[*i] || self.reveal) && contains(&[n.q, n.a], &q))
             })
             .collect();
-        let learned = self.journal.terms.iter().filter(|t| **t).count();
+        let learned = self.journal.notes.iter().filter(|t| **t).count();
         self.text(
             &format!(
-                "クロノに おそわった ことば {}/{}　（人物の話や出来事に出てきた用語を、クロノがやさしく説明します）",
+                "クロノに きいた なぜ？ {}/{}　（人物の話や出来事で「なぜ？」を おすと たまるよ）",
                 learned,
-                glossary::TERMS.len()
+                notes::NOTES.len()
             ),
             18.,
             y0 + 2.,
@@ -3203,9 +3215,9 @@ impl Game {
             Font::Normal,
             CYAN,
         );
-        let cols = (((w - 32.) / 330.) as usize).max(2);
+        let cols = (((w - 32.) / 420.) as usize).max(1);
         let cw = (w - 32. - (cols - 1) as f32 * 10.) / cols as f32;
-        let ch = 118.;
+        let ch = if self.gfx.compact { 150. } else { 170. };
         let y0 = y0 + 28.;
         for (k, i) in items.iter().enumerate() {
             let x = 16. + (k % cols) as f32 * (cw + 10.);
@@ -3213,9 +3225,10 @@ impl Game {
             if y + ch < vy0 || y > vy1 {
                 continue;
             }
-            let t = &glossary::TERMS[*i];
-            let found = self.journal.terms[*i];
+            let n = &notes::NOTES[*i];
+            let found = self.journal.notes[*i];
             let known = found || self.reveal;
+            let c = era_color(notes::era(*i));
             self.gfx.fill_round(
                 x,
                 y,
@@ -3235,42 +3248,58 @@ impl Game {
                 y + ch,
                 8.,
                 1.,
-                if found { CYAN } else { alpha(LOCKED, 0.7) },
+                if found {
+                    alpha(c, 0.9)
+                } else {
+                    alpha(LOCKED, 0.7)
+                },
+            );
+            self.text(
+                &format!("{}　{}", ERAS[notes::era(*i)].name, notes::scene(*i)),
+                x + 14.,
+                y + 8.,
+                cw - 28.,
+                16.,
+                Font::Small,
+                if known { INK_SOFT } else { alpha(c, 0.95) },
             );
             if known {
-                self.text(
-                    &format!("{}（{}）", t.name(), t.kana),
-                    x + 14.,
-                    y + 10.,
-                    cw - 28.,
-                    24.,
-                    Font::Big,
-                    INK,
-                );
+                self.text(n.q, x + 14., y + 26., cw - 28., 24., Font::Big, INK);
                 self.gfx
                     .clip_begin(x, y.max(vy0), x + cw, (y + ch - 6.).min(vy1));
                 self.text(
-                    t.kid,
+                    n.a,
                     x + 14.,
-                    y + 38.,
+                    y + 54.,
                     cw - 28.,
-                    ch - 44.,
-                    Font::Normal,
+                    ch - 60.,
+                    Font::Small,
                     INK_SOFT,
                 );
                 self.gfx.clip_end();
             } else {
-                self.text("？？？", x + 14., y + 10., cw - 28., 24., Font::Big, MUTED);
+                self.text("？？？", x + 14., y + 30., cw - 28., 24., Font::Big, MUTED);
                 self.text(
-                    "人物の話や出来事の中に出てくると、クロノが教えてくれる",
+                    "この場面で、クロノに「なぜ？」を きいてみよう",
                     x + 14.,
-                    y + 40.,
+                    y + 60.,
                     cw - 28.,
                     40.,
                     Font::Small,
                     LOCKED,
                 );
             }
+        }
+        if items.is_empty() {
+            self.text(
+                "この時代の なぜ？ノートは じゅんびちゅうです。",
+                18.,
+                y0 + 10.,
+                w - 36.,
+                24.,
+                Font::Normal,
+                MUTED,
+            );
         }
         28. + items.len().div_ceil(cols) as f32 * (ch + 10.)
     }
@@ -3523,11 +3552,7 @@ impl Game {
         let qh = self.gfx.measure_h(quiz.q, Font::Big, cw0 - 60.).max(26.);
         let nh = self.gfx.measure_h(quiz.note, Font::Normal, cw0 - 60.) + 24.;
         // 答えたあとで、問題に出てきた用語をクロノが説明する（答えの手がかりにならないように）
-        let terms = if pick.is_some() {
-            glossary::find(&format!("{}{}{}", quiz.q, quiz.choices.join(""), quiz.note))
-        } else {
-            vec![]
-        };
+        let terms: Vec<usize> = vec![];
         let mh = self.memo_h(&terms, cw0 - 60.);
         let need = 46. + 18. + qh + 4. * row + 34. + nh + 64. + if mh > 0. { mh + 10. } else { 0. };
         let [x, y, cw, ch] = self.trial_card(860., need);
@@ -4269,7 +4294,7 @@ impl Game {
                         .collect(),
                 ),
             };
-            let terms = glossary::find(&paras.join(""));
+            let terms = entry_notes(e);
             for para in paras {
                 let ph = self.gfx.measure_h(para, Font::Normal, tw);
                 self.text(para, x + 30., yy, tw, ph, Font::Normal, TEXT);
@@ -4399,7 +4424,8 @@ impl Game {
             return head + 120.;
         }
         let mut need = head + 6. + 28. + 60. + 16.;
-        let terms = glossary::find(&paras.join(""));
+        let _ = &paras;
+        let terms = entry_notes(e);
         let mh = self.memo_h(&terms, tw);
         if mh > 0. {
             need += mh + 12.;
@@ -4460,6 +4486,14 @@ impl Game {
             Act::Close,
             true,
         );
+    }
+}
+
+/// 図鑑の説明に添えるなぜ？ノート
+fn entry_notes(e: Entry) -> Vec<usize> {
+    match e {
+        Entry::Person(i) => notes::for_person_all(PEOPLE[i].id),
+        Entry::Event(i) => notes::for_event(EVENTS[i].id),
     }
 }
 
@@ -5038,88 +5072,93 @@ mod tests {
         assert_eq!(j.flags & FLAGS_DONE, FLAGS_DONE);
     }
 
+    /// クロノのなぜ？ノート：疑問を押すと答えが開き、読み上げ、図鑑に残る
     #[test]
-    fn chrono_explains_terms_and_remembers_them() {
+    fn chrono_answers_why_questions() {
         let mut g = game(Gfx::new(1600, 900));
-        shift(&mut g, ROME);
+        shift(&mut g, FLORENCE);
         run(&mut g, warp::SHIFT_SECS + 0.2);
-        let antony = person_index("antony").unwrap();
-        g.act(Act::Meet(antony));
+        g.act(Act::Goto(place_index(FLORENCE, "signoria").unwrap()));
+        run(&mut g, 10.);
+        let cascina = event_index("cascina").unwrap();
+        g.act(Act::Observe(cascina));
         g.render();
-        // 「この年、カエサルとともに執政官を務めている」
-        let consul = glossary::index("執政官").unwrap();
-        assert!(g.journal.terms[consul]);
+        // 疑問が並び、まだ答えは開いていない
+        let list = notes::for_event("cascina");
+        assert!(list.len() >= 3);
+        for i in &list {
+            assert!(g
+                .buttons
+                .iter()
+                .any(|b| matches!(b.act, Act::Note(k) if k == *i)));
+        }
+        assert_eq!(g.memo_open, None);
+        let patron = notes::index("cascina-patron").unwrap();
+        let why = notes::index("cascina-why-battle").unwrap();
+        let closed = g.memo_h(&list, 800.);
+        g.act(Act::Note(patron));
+        g.render();
+        assert_eq!(g.memo_open, Some(patron));
+        assert!(
+            g.memo_h(&list, 800.) > closed,
+            "the answer opens below the question"
+        );
+        assert!(g.last_speech.contains("パトロン"));
+        assert!(g.journal.notes[patron]);
+        assert!(!g.journal.notes[why]);
+        // 別の疑問を押すと、そちらに切り替わる。もう一度押すと閉じる
+        g.act(Act::Note(why));
+        g.render();
+        assert_eq!(g.memo_open, Some(why));
+        assert!(g.last_speech.contains("ピサ"));
+        g.act(Act::Note(why));
+        assert_eq!(g.memo_open, None);
+        // あわせて見る出来事へ
+        g.act(Act::Note(patron));
+        g.render();
+        assert!(g
+            .buttons
+            .iter()
+            .any(|b| matches!(b.act, Act::Detail(Entry::Event(k)) if EVENTS[k].id == "anghiari")));
+        // 人物の話のページにもノートがある。ページが変わると閉じた状態から
+        g.act(Act::Close);
+        g.act(Act::Goto(place_index(FLORENCE, "opera").unwrap()));
+        run(&mut g, 10.);
+        let mi = person_index("michelangelo").unwrap();
+        g.act(Act::Meet(mi));
+        g.render();
+        let pieta = notes::index("michelangelo-pieta").unwrap();
+        assert!(g
+            .buttons
+            .iter()
+            .any(|b| matches!(b.act, Act::Note(k) if k == pieta)));
+        g.act(Act::Note(pieta));
+        g.render();
         g.act(Act::Next);
         g.render();
-        assert!(g.journal.terms[glossary::index("演壇").unwrap()]);
-        g.act(Act::Close);
-        g.act(Act::Observe(event_index("lupercalia").unwrap()));
-        g.render();
+        assert_eq!(g.memo_open, None);
+        // 保存と図鑑
+        let j = Journal::read(&g.journal.bytes()).unwrap();
+        assert_eq!(j.notes, g.journal.notes);
         g.act(Act::Close);
         g.act(Act::Codex);
         g.act(Act::Tab(Tab::Words));
         g.render();
-        g.reveal = true;
+        g.gfx.set_compact(true);
         g.render();
-        let j = Journal::read(&g.journal.bytes()).unwrap();
-        assert_eq!(j.terms, g.journal.terms);
-        assert!(g.journal.terms.iter().filter(|t| **t).count() >= 2);
-        // 試練：答える前は用語を出さない（答えの手がかりにしない）
-        for (i, p) in PEOPLE.iter().enumerate() {
-            g.journal.met[i] |= p.era == ROME;
-        }
-        for (i, e) in EVENTS.iter().enumerate() {
-            g.journal.seen[i] |= e.era == ROME;
-        }
-        g.mode = Mode::Field;
-        g.act(Act::Begin(ROME));
-        let julian = glossary::index("ユリウス暦").unwrap();
-        g.journal.terms[julian] = false;
-        for q in 0..5 {
-            g.render();
-            if q == 4 {
-                assert!(!g.journal.terms[julian]);
-            }
-            g.act(Act::Answer(QUIZZES[quizzes(ROME)[q]].answer));
-            g.render();
-            // ことばメモは1語ずつ。「つぎ」で送ると、その語も覚える
-            for _ in 0..g.memo_len {
-                g.act(Act::MemoPage(1));
-                g.render();
-            }
-            g.act(Act::TrialNext);
-        }
-        assert!(g.journal.terms[julian]);
     }
 
-    /// ことばメモはスマートフォンでも1語ずつ収まり、ページを送って読める
+    /// スマートフォンでも、答えを開いたノートが会話の枠の中で読める長さ
     #[test]
-    fn word_memo_pages_one_term_at_a_time() {
+    fn why_notes_fit_on_phones() {
         let mut g = game(Gfx::new(844, 390));
         g.gfx.set_compact(true);
-        shift(&mut g, ROME);
-        run(&mut g, warp::SHIFT_SECS + 0.2);
-        g.act(Act::Observe(event_index("lupercalia").unwrap()));
-        g.render();
-        assert!(g.memo_len >= 3);
-        let first = g.memo_page;
-        assert!(g.buttons.iter().any(|b| matches!(b.act, Act::MemoPage(1))));
-        g.act(Act::MemoPage(1));
-        g.render();
-        assert_eq!(g.memo_page, first + 1);
-        assert!(g.last_speech.contains("。"), "the new term is read aloud");
-        g.act(Act::MemoPage(-1));
-        g.act(Act::MemoPage(-1));
-        assert_eq!(g.memo_page, g.memo_len - 1, "wraps around");
-        // 別の画面では1語目から
-        g.act(Act::Close);
-        g.act(Act::Observe(event_index("funeral").unwrap()));
-        g.render();
-        assert_eq!(g.memo_page, 0);
-        // 1語だけの高さは、スマートフォンの画面に収まる
-        let terms = glossary::find(&EVENTS[event_index("lupercalia").unwrap()].body.join(""));
-        let w = g.gfx.width as f32 - 92.;
-        assert!(g.memo_h(&terms, w) < g.gfx.height as f32 * 0.5);
+        for i in 0..notes::NOTES.len() {
+            g.memo_open = Some(i);
+            g.memo_for = g.overlay;
+            let h = g.memo_h(&[i], g.gfx.width as f32 - 80.);
+            assert!(h < g.gfx.height as f32 * 1.2, "{}", notes::NOTES[i].id);
+        }
     }
 
     /// 読み上げる文の熟語は、すべて読み辞書（src/speech_ja.tsv）でかなに直る
@@ -5194,7 +5233,6 @@ mod tests {
         let antony = person_index("antony").unwrap();
         g.act(Act::Meet(antony));
         assert!(g.last_speech.contains("執政官"));
-        assert!(g.last_speech.contains("しっせいかん"), "ことばメモも読む");
         g.render();
         assert!(g.buttons.iter().any(|b| matches!(b.act, Act::Replay)));
         g.act(Act::Next);

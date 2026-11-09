@@ -958,94 +958,175 @@ impl Game {
     }
 }
 
-// ------------------------------------------------------------------ クロノのことばメモ
+// ------------------------------------------------------------------ クロノのなぜ？ノート
+const NOTE_ROW: f32 = 40.;
+
 impl Game {
-    /// ことばメモの高さ（用語が無ければ0）。一度に1語ずつ見せるので、いちばん長い説明に合わせる
-    pub(super) fn memo_h(&mut self, terms: &[usize], w: f32) -> f32 {
-        if terms.is_empty() {
-            return 0.;
-        }
-        let tw = w - 92.;
-        let tallest = terms
-            .iter()
-            .map(|&i| self.gfx.measure_h(glossary::TERMS[i].kid, Font::Normal, tw))
-            .fold(0f32, f32::max);
-        let nav = if terms.len() > 1 { 40. } else { 0. };
-        (38. + 24. + tallest + 8. + nav + 4.).max(96.)
+    /// なぜ？ノートの答えの文の幅
+    fn note_text_w(w: f32) -> f32 {
+        w - 40.
     }
 
-    /// クロノが用語をやさしく説明する（1語ずつページ送り）。描いた高さを返す。
-    /// 見せた用語は図鑑の「ことば」に残る
-    pub(super) fn memo(&mut self, terms: &[usize], x: f32, y: f32, w: f32) -> f32 {
-        let h = self.memo_h(terms, w);
-        if h == 0. {
+    /// なぜ？ノートの高さ（ノートが無ければ0）。開いている答えの分だけ伸びる
+    pub(super) fn memo_h(&mut self, list: &[usize], w: f32) -> f32 {
+        if list.is_empty() {
             return 0.;
         }
-        // 別の画面・別のページに変わったら、1語目から
-        if self.memo_for != self.overlay || self.memo_len != terms.len() {
+        let mut h = 48. + list.len() as f32 * NOTE_ROW + 8.;
+        if let Some(i) = self
+            .memo_open
+            .filter(|i| list.contains(i) && self.memo_for == self.overlay)
+        {
+            let n = &notes::NOTES[i];
+            h += self.gfx.measure_h(n.a, Font::Normal, Self::note_text_w(w)) + 16.;
+            h += self.gfx.measure_h(
+                &format!("史料：{}", n.source),
+                Font::Small,
+                Self::note_text_w(w),
+            ) + 6.;
+            if !n.see.is_empty() {
+                h += 38.;
+            }
+        }
+        h
+    }
+
+    /// クロノのなぜ？ノート：子どもの疑問を並べ、押すとクロノが答える。描いた高さを返す。
+    /// 聞いたノートは図鑑の「なぜ？ノート」に残る
+    pub(super) fn memo(&mut self, list: &[usize], x: f32, y: f32, w: f32) -> f32 {
+        if list.is_empty() {
+            return 0.;
+        }
+        // 別の画面・別のページに変わったら、閉じた状態から
+        if self.memo_for != self.overlay {
             self.memo_for = self.overlay;
-            self.memo_page = 0;
+            self.memo_open = None;
         }
-        self.memo_len = terms.len();
-        let k = self.memo_page.min(terms.len() - 1);
-        let i = terms[k];
+        if let Some(i) = self.memo_open.filter(|i| !list.contains(i)) {
+            let _ = i;
+            self.memo_open = None;
+        }
         if std::mem::take(&mut self.memo_turned) {
-            let t = &glossary::TERMS[i];
-            self.say(format!("{}。{}", t.kana, t.kid));
+            if let Some(i) = self.memo_open {
+                let n = &notes::NOTES[i];
+                self.say(format!("{}　{}", n.q, n.a.replace('\n', "")));
+                if !std::mem::replace(&mut self.journal.notes[i], true) {
+                    self.change();
+                }
+            }
         }
+        let h = self.memo_h(list, w);
         self.gfx
             .fill_round(x, y, x + w, y + h, 12., [0.98, 0.96, 0.89, 0.97]);
         self.gfx
             .stroke_round(x, y, x + w, y + h, 12., 1.5, alpha(CYAN, 0.9));
-        self.chrono(x + 38., y + 44., 20., false);
+        self.chrono(x + 30., y + 26., 15., false);
         self.text(
-            "クロノの ことばメモ",
-            x + 76.,
-            y + 8.,
-            w - 90.,
+            "クロノの なぜ？ノート　―　きに なる ことを おしてね",
+            x + 56.,
+            y + 12.,
+            w - 70.,
             22.,
             Font::Normal,
             [0.15, 0.45, 0.60, 1.],
         );
-        let tw = w - 92.;
-        let t = &glossary::TERMS[i];
-        self.text(
-            &format!("{}（{}）", t.name(), t.kana),
-            x + 76.,
-            y + 36.,
-            tw,
-            22.,
-            Font::Big,
-            INK,
-        );
-        let eh = self.gfx.measure_h(t.kid, Font::Normal, tw);
-        self.text(t.kid, x + 76., y + 60., tw, eh, Font::Normal, INK_SOFT);
-        if terms.len() > 1 {
-            let ny = y + h - 40.;
-            self.button(
-                "‹ まえ",
-                [x + w - 236., ny, 84., 30.],
-                Act::MemoPage(-1),
-                false,
+        let mut yy = y + 48.;
+        for &i in list {
+            let n = &notes::NOTES[i];
+            let open = self.memo_open == Some(i);
+            let heard = self.journal.notes[i];
+            let r = [x + 12., yy, w - 24., NOTE_ROW - 6.];
+            self.gfx.fill_round(
+                r[0],
+                r[1],
+                r[0] + r[2],
+                r[1] + r[3],
+                8.,
+                if open {
+                    [0.86, 0.93, 0.97, 1.]
+                } else {
+                    [1., 1., 1., 0.9]
+                },
+            );
+            self.gfx.stroke_round(
+                r[0],
+                r[1],
+                r[0] + r[2],
+                r[1] + r[3],
+                8.,
+                1.,
+                if open {
+                    [0.25, 0.55, 0.70, 1.]
+                } else {
+                    [0.75, 0.70, 0.58, 1.]
+                },
             );
             self.text(
-                &format!("{} / {}", k + 1, terms.len()),
-                x + w - 148.,
-                ny + 4.,
-                56.,
-                22.,
+                if open { "▼" } else { "？" },
+                r[0] + 6.,
+                r[1] + 5.,
+                24.,
+                24.,
                 Font::NormalCenter,
-                INK,
+                [0.20, 0.50, 0.66, 1.],
             );
-            self.button(
-                "つぎ ›",
-                [x + w - 92., ny, 84., 30.],
-                Act::MemoPage(1),
-                true,
-            );
-        }
-        if !std::mem::replace(&mut self.journal.terms[i], true) {
-            self.change();
+            self.text(n.q, r[0] + 34., r[1] + 6., r[2] - 90., 24., Font::Big, INK);
+            if heard && !open {
+                self.text(
+                    "きいた",
+                    r[0] + r[2] - 56.,
+                    r[1] + 8.,
+                    48.,
+                    20.,
+                    Font::Small,
+                    INK_SOFT,
+                );
+            }
+            self.buttons.push(Button {
+                rect: r,
+                act: Act::Note(i),
+            });
+            yy += NOTE_ROW;
+            if open {
+                let tw = Self::note_text_w(w);
+                let ah = self.gfx.measure_h(n.a, Font::Normal, tw);
+                self.text(n.a, x + 26., yy + 4., tw, ah, Font::Normal, INK);
+                yy += ah + 10.;
+                let src = format!("史料：{}", n.source);
+                let sh = self.gfx.measure_h(&src, Font::Small, tw);
+                self.text(&src, x + 26., yy, tw, sh, Font::Small, INK_SOFT);
+                yy += sh + 12.;
+                if !n.see.is_empty() {
+                    let mut bx = x + 26.;
+                    self.text(
+                        "あわせて みよう：",
+                        bx,
+                        yy + 6.,
+                        130.,
+                        20.,
+                        Font::Small,
+                        INK_SOFT,
+                    );
+                    bx += 130.;
+                    for id in n.see {
+                        if let Some(k) = event_index(id) {
+                            let label = format!("{} ›", EVENTS[k].title);
+                            let bw = self.gfx.measure(&label, Font::NormalCenter) + 28.;
+                            if bx + bw > x + w - 12. {
+                                break;
+                            }
+                            self.button(
+                                &label,
+                                [bx, yy, bw, 30.],
+                                Act::Detail(Entry::Event(k)),
+                                false,
+                            );
+                            bx += bw + 8.;
+                        }
+                    }
+                    yy += 38.;
+                }
+            }
         }
         h
     }

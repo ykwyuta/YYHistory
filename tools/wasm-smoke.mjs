@@ -36,7 +36,7 @@ writeFileSync(new URL('../output/review/world-frame.json',import.meta.url),JSON.
 // 転移してローマのフォルムに着く
 key(13);has('これから いく じだいに ついて、せつめい するね！');has('どんな ばしょ？');key(13);has('それまでに なにが あった？');key(27);has('時 空 転 移');tick(70);has('フォルム・ロマヌム');has('この場所にいる人物');
 // 人物に会う → 人物一覧表に登録
-click('マルクス・アントニウス');has('わたしはマルクス・アントニウス');has('1 / 3');has('クロノの ことばメモ');has('執政官（しっせいかん）');
+click('マルクス・アントニウス');has('わたしはマルクス・アントニウス');has('1 / 3');
 key(13);has('2 / 3');key(13);key(13);has('じくうの ふくげんりょくだ');key(13);has('人物 1/43');
 // 出来事を観察する
 click('ルペルカリア祭の冠');has('観察');has('史料：');key(27);has('出来事 1/45');
@@ -45,7 +45,7 @@ tick(20);assert.ok(saved?.length>20,'autosave');
 key(0x71);has('人物一覧表');has('No.001');has('マルクス・アントニウス');has('？？？');
 click('年表');has('紀元前44年2月15日');has('ルペルカリア祭の冠');
 click('出来事集');has('ルペルカリア祭の冠');
-click('ことば');has('クロノに おそわった ことば');
+click('なぜ？ノート');has('クロノに きいた なぜ？');
 // 記録の読み込み
 const before=Buffer.from(saved);const ptr=wasm.yy_alloc(saved.length);new Uint8Array(wasm.memory.buffer,ptr,saved.length).set(saved);wasm.yy_loaded(ptr,saved.length);tick();has('旅の記録を読み込みました');has('人物 1/43');
 tick(20);assert.equal(Buffer.from(saved).toString('hex'),before.toString('hex'));
