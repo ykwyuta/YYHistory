@@ -36,7 +36,7 @@ pub fn place_speech(era: usize, place: usize) -> String {
             .filter(|q| q.era == era && q.place == p.id)
             .count();
         format!(
-            "{}に ついた。{}。ここには、人物が{}人、出来事が{}件。",
+            "{}に着いた。{}。ここには、人物が{}人、出来事が{}件。",
             p.name, p.desc, people, events
         )
     })
@@ -112,7 +112,7 @@ pub fn answer_speech(era: usize, q: usize, pick: usize) -> String {
 
 pub fn trial_intro_speech(era: usize) -> String {
     format!(
-        "この時代の記録は すべて そろった。アカシックレコードの試練が はじまる。{}についての四択問題が{}問。全問正解すると、この時代の秘宝が 手に入る。",
+        "この時代の記録はすべてそろった。アカシックレコードの試練が始まる。{}についての四択問題が{}問。全問正解すると、この時代の秘宝が手に入る。",
         ERAS[era].name,
         quizzes(era).len()
     )
@@ -125,7 +125,7 @@ pub fn result_speech(era: usize, score: usize) -> String {
         format!("全問正解。秘宝、{}を 手に入れた。{}", t.name, t.desc)
     } else {
         format!(
-            "{}問中{}問 正解。全問正解には とどかなかった。図鑑で 読み返してから、もう一度 挑もう。",
+            "{}問中{}問正解。全問正解にはとどかなかった。図鑑で読み返してから、もう一度挑もう。",
             n, score
         )
     }
@@ -266,6 +266,6 @@ pub fn all_speech() -> Vec<String> {
         v.push(story_speech(page));
     }
     v.extend(intro::TIPS.iter().map(|t| format!("クロノ。{t}")));
-    v.push("この時代の記録は すべて 集まった。アカシックレコードの試練が 始まる。".to_string());
+    v.push("この時代の記録はすべて集まった。アカシックレコードの試練が始まる。".to_string());
     v
 }

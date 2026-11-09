@@ -1941,7 +1941,7 @@ impl Game {
             .push((Target::Shift, [x1 - 220., y0 + 50., 200., 48.]));
         self.speaker_button(x1 - 310., y0 + 58.);
         self.button(
-            "クロノの せつめい",
+            "クロノの説明",
             [x1 - 310., y0 + 96., 160., 32.],
             Act::Brief(self.pick),
             false,
@@ -2004,7 +2004,7 @@ impl Game {
         );
         let n = (self.shift_t * 8.) as usize;
         self.text(
-            &format!("じかんを さかのぼっています{}", "・".repeat(n % 4)),
+            &format!("時間をさかのぼっています{}", "・".repeat(n % 4)),
             cx - 300.,
             cy + 20.,
             600.,
@@ -2354,7 +2354,7 @@ impl Game {
         self.text(era.name, ix, y0 + 30., iw, 26., Font::Big, TEXT);
         self.speaker_button(ix + iw - 76., y0 + 52.);
         self.button(
-            "せつめい",
+            "説明",
             [ix + iw - 160., y0 + 52., 78., 32.],
             Act::Brief(ei),
             false,
@@ -3204,7 +3204,7 @@ impl Game {
         let learned = self.journal.notes.iter().filter(|t| **t).count();
         self.text(
             &format!(
-                "クロノに きいた なぜ？ {}/{}　（人物の話や出来事で「なぜ？」を おすと たまるよ）",
+                "クロノに聞いたなぜ？ {}/{}　（人物の話や出来事で「なぜ？」を押すとたまるよ）",
                 learned,
                 notes::NOTES.len()
             ),
@@ -3280,7 +3280,7 @@ impl Game {
             } else {
                 self.text("？？？", x + 14., y + 30., cw - 28., 24., Font::Big, MUTED);
                 self.text(
-                    "この場面で、クロノに「なぜ？」を きいてみよう",
+                    "この場面で、クロノに「なぜ？」を聞いてみよう",
                     x + 14.,
                     y + 60.,
                     cw - 28.,
@@ -3292,7 +3292,7 @@ impl Game {
         }
         if items.is_empty() {
             self.text(
-                "この時代の なぜ？ノートは じゅんびちゅうです。",
+                "この時代のなぜ？ノートは準備中です。",
                 18.,
                 y0 + 10.,
                 w - 36.,
