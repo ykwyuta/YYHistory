@@ -42,35 +42,24 @@ pub fn place_speech(era: usize, place: usize) -> String {
     })
 }
 
-/// 人物の話（1ページ目は名前と肩書きから）
+/// 人物との会話（0：声をかけたところ、1〜：質問への答え、最後：別れぎわ）
 pub fn meet_speech(i: usize, page: usize) -> String {
-    if let Some(t) = crate::talk::find(PEOPLE[i].id) {
-        let n = t.asks.len();
-        let text = if page == 0 {
-            format!("{}{}", t.scene, t.greet)
-        } else if page <= n {
-            let a = &t.asks[page - 1];
-            let how = if a.how.is_empty() {
-                String::new()
-            } else {
-                format!("{}。", a.how)
-            };
-            format!("{}　{how}{}", a.q, a.a)
-        } else {
-            t.bye.to_string()
-        };
-        return era_readings(PEOPLE[i].era, text.replace('\n', ""));
-    }
-    era_readings(PEOPLE[i].era, {
-        let p = &PEOPLE[i];
-        let line = p.lines[page.min(p.lines.len() - 1)];
-        let head = if page == 0 {
-            format!("{}。{}。", p.name, p.role)
-        } else {
+    let t = crate::talk::of(i);
+    let n = t.asks.len();
+    let text = if page == 0 {
+        format!("{}{}", t.scene, t.greet)
+    } else if page <= n {
+        let a = &t.asks[page - 1];
+        let how = if a.how.is_empty() {
             String::new()
+        } else {
+            format!("{}。", a.how)
         };
-        format!("{head}{line}")
-    })
+        format!("{}　{how}{}", a.q, a.a)
+    } else {
+        t.bye.to_string()
+    };
+    era_readings(PEOPLE[i].era, text.replace('\n', ""))
 }
 
 pub fn observe_speech(i: usize) -> String {

@@ -926,19 +926,10 @@ impl Game {
             Act::Observe(i) => self.observe(i),
             Act::Next => match self.overlay {
                 // 会話：「別れる」で別れぎわのひとこと、もう一度押すと閉じる
-                Overlay::Meet(i, page) if talk::find(PEOPLE[i].id).is_some() => {
+                Overlay::Meet(i, page) => {
                     let last = talk::pages(i) - 1;
                     if page < last {
                         self.show_talk(i, last);
-                    } else {
-                        self.close_overlay();
-                    }
-                }
-                Overlay::Meet(i, page) => {
-                    if page + 1 < PEOPLE[i].lines.len() {
-                        self.overlay = Overlay::Meet(i, page + 1);
-                        self.scroll[Scroll::Overlay as usize] = 0.;
-                        self.say(voice::meet_speech(i, page + 1));
                     } else {
                         self.close_overlay();
                     }
@@ -964,10 +955,12 @@ impl Game {
                 Overlay::Trial(..) => (),
                 _ => self.close_overlay(),
             },
+            // 会話：声をかけたところに戻る
             Act::Prev => {
                 if let Overlay::Meet(i, page) = self.overlay {
-                    self.overlay = Overlay::Meet(i, page.saturating_sub(1));
-                    self.scroll[Scroll::Overlay as usize] = 0.;
+                    if page > 0 {
+                        self.show_talk(i, 0);
+                    }
                 }
             }
             Act::Close => self.close_overlay(),
@@ -1956,15 +1949,7 @@ impl Game {
         );
         let title = format!("{} ― {}", e.name, e.period);
         let title_h = self.gfx.measure_h(&title, Font::Big, tw).max(26.);
-        self.text(
-            &title,
-            tx0,
-            y0 + 32.,
-            tw,
-            title_h,
-            Font::Big,
-            TEXT,
-        );
+        self.text(&title, tx0, y0 + 32., tw, title_h, Font::Big, TEXT);
         // 題が折り返したら、説明はその下から
         let iy = y0 + 36. + title_h;
         self.gfx.clip_begin(tx0, iy - 2., tx0 + tw, y1 - 8.);
@@ -2700,96 +2685,7 @@ impl Game {
     }
 
     fn meet_ui(&mut self, i: usize, page: usize) {
-        if let Some(t) = talk::find(PEOPLE[i].id) {
-            return self.talk_ui(i, t, page);
-        }
-        let p = &PEOPLE[i];
-        let compact = self.gfx.compact;
-        let line = p.lines[page.min(p.lines.len() - 1)];
-        // はじめのページでは、肩書きに出てくる用語も説明する
-        let terms = notes::for_person(p.id, page);
-        let cw0 = 860.0f32.min(self.gfx.width as f32 - 32.);
-        let head = if compact { 150. } else { 170. };
-        let lh = (self.gfx.measure_h(line, Font::Big, cw0 - 92.) + 48.).max(96.);
-        let mh = self.memo_h(&terms, cw0 - 48.);
-        let need = head + lh + if mh > 0. { mh + 12. } else { 0. } + 60.;
-        let [x, y, cw, ch] = self.card(860., need);
-        let mr = if compact { 44. } else { 58. };
-        self.medallion(
-            p.name,
-            x + 30. + mr,
-            y + 30. + mr,
-            mr,
-            era_color(p.era),
-            true,
-        );
-        let tx = x + 60. + mr * 2.;
-        let tw = cw - (tx - x) - 24.;
-        self.text(
-            &format!("{}　／　{}", ERAS[p.era].name, p.life),
-            tx,
-            y + 24.,
-            tw,
-            18.,
-            Font::Small,
-            GOLD,
-        );
-        self.text(p.name, tx, y + 44., tw, 28., Font::Big, TEXT);
-        self.text(p.native, tx, y + 74., tw, 18., Font::Small, MUTED);
-        self.text(p.role, tx, y + 96., tw, 20., Font::Normal, CYAN);
-        // 言葉となぜ？ノート（入りきらなければ、なぞって読む）
-        let by = y + head;
-        let view_h = ch - head - 60.;
-        self.scroll_areas
-            .push(([x, by, cw, view_h], Scroll::Overlay));
-        let off = self.scroll[Scroll::Overlay as usize];
-        self.gfx.clip_begin(x, by, x + cw, by + view_h);
-        let ly = by - off;
-        self.gfx.fill_round(
-            x + 24.,
-            ly,
-            x + cw - 24.,
-            ly + lh,
-            8.,
-            [0.05, 0.08, 0.14, 0.95],
-        );
-        self.gfx
-            .stroke_round(x + 24., ly, x + cw - 24., ly + lh, 8., 1., alpha(GOLD, 0.6));
-        self.text(line, x + 46., ly + 18., cw - 92., lh - 30., Font::Big, TEXT);
-        self.text(
-            &format!("{} / {}", page + 1, p.lines.len()),
-            x + cw - 120.,
-            ly + lh - 24.,
-            80.,
-            18.,
-            Font::Small,
-            MUTED,
-        );
-        let mh = self.memo(&terms, x + 24., ly + lh + 12., cw - 48.);
-        self.gfx.clip_end();
-        self.scroll_max[Scroll::Overlay as usize] =
-            lh + if mh > 0. { mh + 12. } else { 0. } - view_h;
-        let last = page + 1 >= p.lines.len();
-        self.button(
-            "詳しく（図鑑）",
-            [x + 24., y + ch - 46., 150., 34.],
-            Act::Detail(Entry::Person(i)),
-            false,
-        );
-        if page > 0 {
-            self.button(
-                "‹ 前へ",
-                [x + cw - 330., y + ch - 46., 120., 34.],
-                Act::Prev,
-                false,
-            );
-        }
-        self.button(
-            if last { "別れる" } else { "次へ ›" },
-            [x + cw - 200., y + ch - 46., 176., 34.],
-            Act::Next,
-            true,
-        );
+        self.talk_ui(i, talk::of(i), page);
     }
 
     /// 出来事の場面の高さ（画像が無ければ0）
@@ -4901,12 +4797,8 @@ fn icon(g: &mut Gfx, kind: Kind, x: f32, y: f32, s: f32) {
 #[cfg(test)]
 mod tests {
     /// 会話を最後まで進めて閉じるのに必要な「次へ」の回数
-    fn meet_steps(i: usize) -> usize {
-        if talk::find(PEOPLE[i].id).is_some() {
-            2
-        } else {
-            PEOPLE[i].lines.len()
-        }
+    fn meet_steps(_i: usize) -> usize {
+        2
     }
     use super::*;
 
@@ -5321,13 +5213,46 @@ mod tests {
         run(&mut g, warp::SHIFT_SECS + 0.2);
         let antony = person_index("antony").unwrap();
         g.act(Act::Meet(antony));
-        assert!(g.last_speech.contains("執政官"));
+        assert!(g.last_speech.contains("フォルム"));
         g.render();
         assert!(g.buttons.iter().any(|b| matches!(b.act, Act::Replay)));
-        g.act(Act::Next);
-        assert!(g.last_speech.starts_with(PEOPLE[antony].lines[1]));
+        // 質問すると、その答えを読む。🔊（F4）で同じ答えを読み直す
+        g.act(Act::Ask(2));
+        assert!(g.last_speech.contains("執政官"));
+        let said = g.last_speech.clone();
         g.handle(Ev::Key(0x73, true));
-        assert!(g.last_speech.starts_with(PEOPLE[antony].lines[1]));
+        assert_eq!(g.last_speech, said);
+    }
+
+    /// すべての人物の会話のすべての場面が、スマートフォンでも最後の質問と「別れる」まで届く
+    #[test]
+    fn every_talk_fits_on_phones() {
+        let mut g = game(Gfx::new(844, 390));
+        g.gfx.set_compact(true);
+        for i in 0..PEOPLE.len() {
+            let n = talk::of(i).asks.len();
+            for page in 0..talk::pages(i) {
+                g.overlay = Overlay::Meet(i, page);
+                g.scroll[Scroll::Overlay as usize] = 0.;
+                g.render();
+                assert!(
+                    g.buttons.iter().any(|b| matches!(b.act, Act::Next)),
+                    "{} {page}",
+                    PEOPLE[i].id
+                );
+                g.scroll[Scroll::Overlay as usize] = g.scroll_max[Scroll::Overlay as usize].max(0.);
+                g.render();
+                if page <= n {
+                    assert!(
+                        g.buttons
+                            .iter()
+                            .any(|b| matches!(b.act, Act::Ask(k) if k == n - 1)),
+                        "{} {page}",
+                        PEOPLE[i].id
+                    );
+                }
+            }
+        }
     }
 
     /// 使い方の画面の下に、キャッシュを消して読み込み直すボタンがある（スマートフォンでも届く）
