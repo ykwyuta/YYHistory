@@ -4,6 +4,7 @@
 //! 人物に会い、出来事を観察する。出会った人物と観察した出来事は図鑑
 //! （人物一覧表・年表・出来事集）に記録される。
 mod intro;
+mod voice;
 mod warp;
 use intro::{restore_speech, Target};
 
@@ -98,6 +99,8 @@ enum Overlay {
     TrialResult(usize, usize),
     /// 秘宝の説明（時代）
     Treasure(usize),
+    /// はじめのおはなしの表紙（ここで押すと、iPad などでも音声が使えるようになる）
+    Title,
     /// はじめのおはなし（ページ）
     Story(usize),
     /// 時空の復元力のはじめての説明（会った人物）
@@ -134,6 +137,7 @@ enum Act {
     StoryBack,
     StorySkip,
     TipsOff,
+    Replay,
 }
 
 struct Button {
@@ -377,6 +381,14 @@ pub struct Game {
     restore_fx: Option<(usize, f32)>,
     /// クロノの案内が指す場所（この描画で見つけたもの）
     targets: Vec<(Target, [f32; 4])>,
+    /// 最後に読み上げた文（声 ON にしたときに読む）
+    last_speech: String,
+    /// 最後に読み上げたクロノの案内
+    last_tip: Option<&'static str>,
+    /// 最後に読み上げを始めた時刻
+    spoke_at: f32,
+    /// いま開いている枠（🔊 ボタンを置く）
+    card_rect: Option<[f32; 4]>,
     voice: bool,
     dirty: bool,
     save_in: f32,
@@ -426,6 +438,10 @@ impl Game {
             story_t: 0.,
             restore_fx: None,
             targets: vec![],
+            last_speech: String::new(),
+            last_tip: None,
+            spoke_at: -1.,
+            card_rect: None,
             voice: platform::voice_enabled(),
             dirty: false,
             save_in: 0.,
@@ -522,15 +538,13 @@ impl Game {
     /// 会話や観察を閉じたとき：その時代の情報がそろったら試練を始める
     fn close_overlay(&mut self) {
         let prev = std::mem::replace(&mut self.overlay, Overlay::None);
-        platform::speak("");
+        self.hush();
         if let Overlay::Meet(i, _) = prev {
             // 話した記憶は、時空の復元力で歴史から消える
             if self.journal.flags & FLAG_RESTORE == 0 {
                 self.overlay = Overlay::Restore(i);
                 self.story_t = 0.;
-                if self.voice {
-                    platform::speak(&restore_speech(i));
-                }
+                self.say(restore_speech(i));
                 return;
             }
             self.restore_fx = Some((i, 0.));
@@ -547,11 +561,7 @@ impl Game {
         {
             self.trial_offered[era] = true;
             self.overlay = Overlay::TrialIntro(era);
-            if self.voice {
-                platform::speak(
-                    "この時代の記録はすべて集まった。アカシックレコードの試練が始まる。",
-                );
-            }
+            self.say(voice::trial_intro_speech(era));
         }
     }
 
@@ -597,6 +607,7 @@ impl Game {
             self.handle(*e);
         }
         self.update(dt);
+        self.speak_tip();
         if self.dirty {
             self.save_in -= dt;
             if self.save_in <= 0. {
@@ -621,7 +632,8 @@ impl Game {
             && self.overlay == Overlay::None
             && self.clock > 0.5
         {
-            self.open_story(0);
+            self.overlay = Overlay::Title;
+            self.story_t = 0.;
         }
         if self.mode == Mode::Shift {
             self.shift_t += dt;
@@ -663,6 +675,7 @@ impl Game {
                     "{}に着いた。人物{}人・出来事{}件",
                     place.name, people, events
                 ));
+                self.say(voice::place_speech(self.journal.era, target));
             } else {
                 let a = tr.points[tr.at];
                 let b = tr.points[tr.at + 1];
@@ -687,9 +700,7 @@ impl Game {
             "{}・{}に到着。地図の場所を選んで移動しよう。",
             ERAS[era].years, ERAS[era].name
         ));
-        if self.voice {
-            platform::speak(ERAS[era].intro);
-        }
+        self.say(voice::era_speech(era));
     }
 
     fn people_here(&self) -> Vec<usize> {
@@ -778,9 +789,7 @@ impl Game {
             self.notify(&format!("{} を人物一覧表に登録しました。", p.name));
             self.change();
         }
-        if self.voice {
-            platform::speak(p.lines[0]);
-        }
+        self.say(voice::meet_speech(i, 0));
     }
 
     fn observe(&mut self, i: usize) {
@@ -800,9 +809,7 @@ impl Game {
             self.notify(&format!("「{}」を出来事集と年表に記録しました。", e.title));
             self.change();
         }
-        if self.voice {
-            platform::speak(&format!("{}。{}。{}", e.date, e.title, e.body.join("")));
-        }
+        self.say(voice::observe_speech(i));
     }
 
     fn act(&mut self, a: Act) {
@@ -824,9 +831,7 @@ impl Game {
             }
             Act::PickEra(i) => {
                 self.pick = i;
-                if self.voice {
-                    platform::speak(ERAS[i].intro);
-                }
+                self.say(voice::era_speech(i));
             }
             Act::Shift(era, place) => {
                 self.overlay = Overlay::None;
@@ -834,7 +839,7 @@ impl Game {
                 self.shift_t = 0.;
                 self.mode = Mode::Shift;
                 self.travel = None;
-                platform::speak("");
+                self.hush();
             }
             Act::Goto(p) => self.goto(p),
             Act::Meet(i) => self.meet(i),
@@ -844,15 +849,14 @@ impl Game {
                     if page + 1 < PEOPLE[i].lines.len() {
                         self.overlay = Overlay::Meet(i, page + 1);
                         self.scroll[Scroll::Overlay as usize] = 0.;
-                        if self.voice {
-                            platform::speak(PEOPLE[i].lines[page + 1]);
-                        }
+                        self.say(voice::meet_speech(i, page + 1));
                     } else {
                         self.close_overlay();
                     }
                 }
                 Overlay::None => (),
                 Overlay::TrialIntro(era) => self.act(Act::Begin(era)),
+                Overlay::Title => self.open_story(0),
                 Overlay::Story(page) => {
                     if page + 1 < intro::PAGES.len() {
                         self.open_story(page + 1);
@@ -889,13 +893,8 @@ impl Game {
                     let quiz = &QUIZZES[quizzes(era)[q]];
                     let ok = k == quiz.answer;
                     self.overlay = Overlay::Trial(era, q, Some(k), score + ok as usize);
-                    if self.voice {
-                        platform::speak(&format!(
-                            "{}。{}",
-                            if ok { "正解" } else { "不正解" },
-                            quiz.note
-                        ));
-                    }
+                    let _ = ok;
+                    self.say(voice::answer_speech(era, q, k));
                 }
             }
             Act::TrialNext => {
@@ -914,20 +913,18 @@ impl Game {
                                 self.notify(&format!("秘宝を手に入れた：{}", treasure(era).name));
                             }
                         }
-                        if self.voice {
-                            platform::speak(&if score == n {
-                                format!("全問正解。秘宝、{}を手に入れた。", treasure(era).name)
-                            } else {
-                                format!("{}問中{}問正解。", n, score)
-                            });
-                        }
+                        self.say(voice::result_speech(era, score));
                     }
                 }
             }
             Act::Treasure(era) => {
                 self.overlay = Overlay::Treasure(era);
                 self.scroll[Scroll::Overlay as usize] = 0.;
+                if self.journal.treasures[era] || self.reveal {
+                    self.say(voice::treasure_speech(era));
+                }
             }
+            Act::Replay => self.replay(),
             Act::Story(page) => self.open_story(page),
             Act::StoryBack => {
                 if let Overlay::Story(page) = self.overlay {
@@ -953,6 +950,15 @@ impl Game {
             Act::Detail(e) => {
                 self.overlay = Overlay::Detail(e);
                 self.scroll[Scroll::Overlay as usize] = 0.;
+                let known = match e {
+                    Entry::Person(i) => self.journal.met[i],
+                    Entry::Event(i) => self.journal.seen[i],
+                } || self.reveal;
+                if known {
+                    self.say(voice::detail_speech(e));
+                } else {
+                    self.hush();
+                }
             }
             Act::Help => {
                 self.overlay = Overlay::Help;
@@ -961,8 +967,10 @@ impl Game {
             Act::Voice => {
                 self.voice = !self.voice;
                 platform::save_voice(self.voice);
-                if !self.voice {
-                    platform::speak("");
+                if self.voice {
+                    self.replay();
+                } else {
+                    self.hush();
                 }
             }
             Act::Export => {
@@ -975,18 +983,9 @@ impl Game {
         }
     }
 
-    fn speak_question(&self) {
-        if let (true, Overlay::Trial(era, q, None, _)) = (self.voice, self.overlay) {
-            let quiz = &QUIZZES[quizzes(era)[q]];
-            platform::speak(&format!(
-                "第{}問。{}。1、{}。2、{}。3、{}。4、{}。",
-                q + 1,
-                quiz.q,
-                quiz.choices[0],
-                quiz.choices[1],
-                quiz.choices[2],
-                quiz.choices[3]
-            ));
+    fn speak_question(&mut self) {
+        if let Overlay::Trial(era, q, None, _) = self.overlay {
+            self.say(voice::question_speech(era, q));
         }
     }
 
@@ -1079,7 +1078,7 @@ impl Game {
                     }
                     return;
                 }
-                if let Overlay::Story(_) = self.overlay {
+                if let Overlay::Story(_) | Overlay::Title = self.overlay {
                     match k {
                         27 => self.act(Act::StorySkip),
                         37 | 65 => self.act(Act::StoryBack),
@@ -1120,7 +1119,7 @@ impl Game {
                         if let Overlay::Meet(..) = self.overlay {
                             self.act(Act::Prev);
                         } else if self.mode == Mode::Atlas {
-                            self.pick = (self.pick + ERAS.len() - 1) % ERAS.len();
+                            self.act(Act::PickEra((self.pick + ERAS.len() - 1) % ERAS.len()));
                         } else {
                             self.step(-1., 0.);
                         }
@@ -1129,26 +1128,27 @@ impl Game {
                         if let Overlay::Meet(..) = self.overlay {
                             self.act(Act::Next);
                         } else if self.mode == Mode::Atlas {
-                            self.pick = (self.pick + 1) % ERAS.len();
+                            self.act(Act::PickEra((self.pick + 1) % ERAS.len()));
                         } else {
                             self.step(1., 0.);
                         }
                     }
                     38 | 87 => {
                         if self.mode == Mode::Atlas {
-                            self.pick = (self.pick + ERAS.len() - 1) % ERAS.len();
+                            self.act(Act::PickEra((self.pick + ERAS.len() - 1) % ERAS.len()));
                         } else {
                             self.step(0., -1.);
                         }
                     }
                     40 | 83 => {
                         if self.mode == Mode::Atlas {
-                            self.pick = (self.pick + 1) % ERAS.len();
+                            self.act(Act::PickEra((self.pick + 1) % ERAS.len()));
                         } else {
                             self.step(0., 1.);
                         }
                     }
                     0x71 => self.act(Act::Codex),
+                    0x73 => self.act(Act::Replay),
                     0x72 => self.act(Act::Help),
                     0x7a => self.gfx.toggle_fullscreen(),
                     _ => (),
@@ -1188,6 +1188,7 @@ impl Game {
             if let Overlay::Meet(..) | Overlay::Story(_) | Overlay::Restore(_) = self.overlay {
                 self.act(Act::Next);
             }
+            // 表紙は「はじめる」のボタンで進む（最初のタップで読み上げを始めるため）
             return;
         }
         if self.mode == Mode::Field {
@@ -1371,6 +1372,7 @@ impl Game {
         self.buttons.clear();
         self.scroll_areas.clear();
         self.targets.clear();
+        self.card_rect = None;
         let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
         self.gfx.begin(NIGHT);
         self.gfx.set_screen_xform();
@@ -1413,14 +1415,28 @@ impl Game {
             Overlay::TrialResult(era, score) => self.trial_result_ui(era, score),
             Overlay::Treasure(era) => self.treasure_ui(era),
             Overlay::Story(page) => self.story_ui(page),
+            Overlay::Title => self.title_ui(),
             Overlay::Restore(i) => self.restore_explain_ui(i),
+        }
+        // 開いている枠の右上に 🔊（おはなしと復元力の説明は、それぞれの画面に置く）
+        if let (Some(r), false) = (
+            self.card_rect,
+            matches!(
+                self.overlay,
+                Overlay::Help | Overlay::Title | Overlay::Story(_) | Overlay::Restore(_)
+            ),
+        ) {
+            self.speaker_button(r[0] + r[2] - 96., r[1] + 12.);
         }
         if self.mode == Mode::Shift {
             self.shift_ui();
         }
         if self.toast_left > 0.
             && self.mode != Mode::Shift
-            && !matches!(self.overlay, Overlay::Story(_) | Overlay::Restore(_))
+            && !matches!(
+                self.overlay,
+                Overlay::Title | Overlay::Story(_) | Overlay::Restore(_)
+            )
         {
             let tw = (w * 0.55).min(640.);
             let tx = (w - tw) / 2.;
@@ -1830,6 +1846,7 @@ impl Game {
         );
         self.targets
             .push((Target::Shift, [x1 - 220., y0 + 50., 200., 48.]));
+        self.speaker_button(x1 - 310., y0 + 58.);
         if !compact {
             self.text(
                 "Enter でも転移できます",
@@ -2235,7 +2252,8 @@ impl Game {
             Font::Small,
             GOLD,
         );
-        self.text(era.name, ix, y0 + 30., iw, 26., Font::Big, TEXT);
+        self.text(era.name, ix, y0 + 30., iw - 90., 26., Font::Big, TEXT);
+        self.speaker_button(ix + iw - 76., y0 + 26.);
         let pc = PEOPLE.iter().filter(|p| p.era == ei).count();
         let ec = EVENTS.iter().filter(|x| x.era == ei).count();
         self.text(
@@ -2524,6 +2542,7 @@ impl Game {
         let x = (w - cw) / 2.;
         let y = (h - ch) / 2.;
         self.panel_box(x, y, x + cw, y + ch);
+        self.card_rect = Some([x, y, cw, ch]);
         [x, y, cw, ch]
     }
 
@@ -3348,6 +3367,7 @@ impl Game {
             1.,
             alpha(GOLD, 0.5),
         );
+        self.card_rect = Some([x, y, cw, ch]);
         [x, y, cw, ch]
     }
 
@@ -3434,7 +3454,7 @@ impl Game {
             ),
             x + 30.,
             y + 18.,
-            cw - 160.,
+            cw - 260.,
             20.,
             Font::Normal,
             CYAN,
@@ -3453,7 +3473,7 @@ impl Game {
         );
         // 進み具合
         for k in 0..list.len() {
-            let cx = x + cw - 40. - (list.len() - 1 - k) as f32 * 20.;
+            let cx = x + cw - 124. - (list.len() - 1 - k) as f32 * 20.;
             let c = if k < q || (k == q && pick.is_some()) {
                 GOLD
             } else if k == q {
@@ -4837,7 +4857,19 @@ mod tests {
     fn first_launch_tells_the_story_then_guides() {
         let mut g = Game::new(Gfx::new(1600, 900));
         run(&mut g, 1.);
+        // 表紙：最初のタップは「はじめる」。ここで iPad などの音声も使えるようになる
+        assert_eq!(g.overlay, Overlay::Title);
+        g.render();
+        assert!(g.buttons.iter().any(|b| matches!(b.act, Act::Next)));
+        g.click(10., 10.);
+        assert_eq!(
+            g.overlay,
+            Overlay::Title,
+            "a stray tap does not skip the first page"
+        );
+        g.handle(Ev::Key(13, true));
         assert_eq!(g.overlay, Overlay::Story(0));
+        assert!(g.last_speech.starts_with(intro::PAGES[0].title));
         for page in 1..intro::PAGES.len() {
             g.handle(Ev::Key(13, true));
             assert_eq!(g.overlay, Overlay::Story(page));
@@ -4953,6 +4985,87 @@ mod tests {
             g.act(Act::TrialNext);
         }
         assert!(g.journal.terms[julian]);
+    }
+
+    /// 読み上げる文の熟語は、すべて読み辞書（src/speech_ja.tsv）でかなに直る
+    #[test]
+    fn every_spoken_compound_has_a_reading() {
+        use crate::{lang::Lang, speech::text_for_speech};
+        let mut missing = std::collections::BTreeMap::new();
+        for text in voice::all_speech() {
+            let spoken = text_for_speech(&text, Lang::Ja);
+            let mut run = String::new();
+            for c in spoken.chars().chain(std::iter::once(' ')) {
+                if matches!(c, '一'..='龯' | '々') {
+                    run.push(c);
+                } else {
+                    if run.chars().count() >= 2 {
+                        missing.entry(run.clone()).or_insert_with(|| text.clone());
+                    }
+                    run.clear();
+                }
+            }
+            assert_eq!(
+                text_for_speech(&spoken, Lang::Ja),
+                spoken,
+                "再変換で読みが変わる: {text}"
+            );
+        }
+        if !missing.is_empty() {
+            let list: Vec<String> = missing.keys().cloned().collect();
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("output/missing-readings.txt");
+            let _ = std::fs::create_dir_all(path.parent().unwrap());
+            let _ = std::fs::write(&path, list.join("\n"));
+            panic!(
+                "読み辞書に無い熟語が{}語あります（output/missing-readings.txt）。例: {:?}",
+                list.len(),
+                &list[..list.len().min(10)]
+            );
+        }
+    }
+
+    #[test]
+    fn chrono_tips_follow_the_arrival_guide_instead_of_cutting_it_off() {
+        let mut g = Game::new(Gfx::new(1600, 900));
+        g.journal.flags = FLAG_INTRO;
+        g.act(Act::Shift(HEIAN, None));
+        run(&mut g, warp::SHIFT_SECS + 0.2);
+        assert!(
+            g.last_speech.starts_with(ERAS[HEIAN].name),
+            "{}",
+            g.last_speech
+        );
+        assert!(g.last_speech.contains("クロノ。"));
+        // 平安京の東市は「ひがしのいち」、長安の東市は「とうし」
+        assert!(
+            voice::place_speech(HEIAN, place_index(HEIAN, "eastmarket").unwrap())
+                .starts_with("ひがしのいち")
+        );
+        assert!(
+            voice::place_speech(CHANGAN, place_index(CHANGAN, "east").unwrap())
+                .starts_with("とうし")
+        );
+    }
+
+    #[test]
+    fn replay_reads_the_current_screen() {
+        let mut g = game(Gfx::new(1600, 900));
+        g.voice = false;
+        g.act(Act::Replay);
+        assert!(g.last_speech.contains(ERAS[0].name));
+        g.act(Act::Shift(ROME, None));
+        run(&mut g, warp::SHIFT_SECS + 0.2);
+        let antony = person_index("antony").unwrap();
+        g.act(Act::Meet(antony));
+        assert!(g.last_speech.contains("執政官"));
+        assert!(g.last_speech.contains("しっせいかん"), "ことばメモも読む");
+        g.render();
+        assert!(g.buttons.iter().any(|b| matches!(b.act, Act::Replay)));
+        g.act(Act::Next);
+        assert!(g.last_speech.starts_with(PEOPLE[antony].lines[1]));
+        g.handle(Ev::Key(0x73, true));
+        assert!(g.last_speech.starts_with(PEOPLE[antony].lines[1]));
     }
 
     #[test]

@@ -362,7 +362,8 @@ pub fn speak(text: &str) {
             });
             tx
         });
-        let lang = crate::lang::lang();
+        // 本文は日本語だけなので、表示言語にかかわらず日本語の音声と読み辞書で読む
+        let lang = crate::lang::Lang::Ja;
         let text = crate::speech::text_for_speech(text, lang);
         let _ = sender.send((text.into_owned(), lang));
     }

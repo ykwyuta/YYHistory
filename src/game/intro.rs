@@ -34,6 +34,16 @@ pub struct Page {
     pub body: &'static str,
 }
 
+/// クロノの案内の文
+pub static TIPS: [&str; 6] = [
+    "いきたい じだいを えらんで、「転移する」を おしてね！",
+    "「会う」を おして、おはなしを きいてみよう！",
+    "「人」の しるしの ある ばしょを おしてみよう。そこまで あるいて いけるよ。",
+    "「観察」を おすと、ここで おきた できごとが みられるよ。",
+    "「！」の しるしの ある ばしょへ いってみよう。",
+    "あつめた きろくは「図鑑」で みられるよ。おしてみて！",
+];
+
 pub static PAGES: &[Page] = &[
     Page {
         scene: Scene::Detective,
@@ -95,15 +105,12 @@ impl Game {
         let page = page.min(PAGES.len() - 1);
         self.overlay = Overlay::Story(page);
         self.story_t = 0.;
-        if self.voice {
-            let p = &PAGES[page];
-            platform::speak(&format!("{}。{}", p.title, p.body.replace('\n', "")));
-        }
+        self.say(voice::story_speech(page));
     }
 
     pub(super) fn finish_story(&mut self) {
         self.overlay = Overlay::None;
-        platform::speak("");
+        self.hush();
         if self.journal.flags & FLAG_INTRO == 0 {
             self.journal.flags |= FLAG_INTRO;
             self.change();
@@ -275,6 +282,69 @@ impl Game {
     }
 
     // -------------------------------------------------------------- はじめのおはなし
+    /// 表紙：「はじめる」を押すと、おはなしが読み上げとともに始まる
+    pub(super) fn title_ui(&mut self) {
+        let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
+        let compact = self.gfx.compact;
+        self.starfield(0.97);
+        let cy = h * if compact { 0.20 } else { 0.26 };
+        self.text("YYHistory", 0., cy - 40., w, 60., Font::Title, GOLD);
+        self.text(
+            "じくう たんていの じけんぼ",
+            0.,
+            cy + 26.,
+            w,
+            40.,
+            Font::TitleMid,
+            TEXT,
+        );
+        let s = if compact { 30. } else { 46. };
+        self.chrono(w / 2., cy + 80. + s * 1.6, s, true);
+        let bw = 300.;
+        let by = h * if compact { 0.70 } else { 0.68 };
+        let p = 0.5 + 0.5 * (self.clock * 3.).sin();
+        self.gfx.stroke_round(
+            w / 2. - bw / 2. - 4. - p * 4.,
+            by - 4. - p * 4.,
+            w / 2. + bw / 2. + 4. + p * 4.,
+            by + 64. + p * 4.,
+            16.,
+            2.,
+            alpha(GOLD, 0.4 + 0.5 * p),
+        );
+        self.button(
+            "▶ はじめる",
+            [w / 2. - bw / 2., by, bw, 60.],
+            Act::Next,
+            true,
+        );
+        self.text(
+            if self.voice {
+                "おはなしを こえで よみあげるよ（「声」で けせるよ）"
+            } else {
+                "「声」を ON に すると、おはなしを よみあげるよ"
+            },
+            0.,
+            by + 72.,
+            w,
+            24.,
+            Font::NormalCenter,
+            MUTED,
+        );
+        self.button(
+            "とばす",
+            [w - 110., self.top() + 12., 92., 32.],
+            Act::StorySkip,
+            false,
+        );
+        self.button(
+            if self.voice { "声 ON" } else { "声 OFF" },
+            [w - 196., self.top() + 12., 76., 32.],
+            Act::Voice,
+            self.voice,
+        );
+    }
+
     pub(super) fn story_ui(&mut self, page: usize) {
         let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
         let compact = self.gfx.compact;
@@ -655,6 +725,7 @@ impl Game {
             Act::StorySkip,
             false,
         );
+        self.speaker_button(w - 196., self.top() + 12.);
     }
 
     // -------------------------------------------------------------- 時空の復元力
@@ -718,6 +789,7 @@ impl Game {
             Act::Close,
             true,
         );
+        self.speaker_button(x + cw - 96., y + ch - 44.);
     }
 
     /// 話し終えるたびの、短い復元力の演出（操作は止めない）
@@ -767,19 +839,15 @@ impl Game {
         let met_any = self.journal.met.iter().any(|m| *m);
         let seen_any = self.journal.seen.iter().any(|m| *m);
         match self.mode {
-            Mode::Atlas if !self.journal.visited.iter().any(|v| *v) => Some((
-                "いきたい じだいを えらんで、「転移する」を おしてね！",
-                Some(Target::Shift),
-            )),
+            Mode::Atlas if !self.journal.visited.iter().any(|v| *v) => {
+                Some((TIPS[0], Some(Target::Shift)))
+            }
             Mode::Field if !met_any => {
                 if let Some(&i) = self.people_here().first() {
-                    Some((
-                        "「会う」を おして、おはなしを きいてみよう！",
-                        Some(Target::Person(i)),
-                    ))
+                    Some((TIPS[1], Some(Target::Person(i))))
                 } else {
                     Some((
-                        "「人」の しるしの ある ばしょを おしてみよう。そこまで あるいて いけるよ。",
+                        TIPS[2],
                         self.place_with(|g, k| {
                             PEOPLE.iter().enumerate().any(|(i, p)| {
                                 p.era == g.journal.era
@@ -793,13 +861,10 @@ impl Game {
             }
             Mode::Field if !seen_any => {
                 if let Some(&i) = self.events_here().first() {
-                    Some((
-                        "「観察」を おすと、ここで おきた できごとが みられるよ。",
-                        Some(Target::Event(i)),
-                    ))
+                    Some((TIPS[3], Some(Target::Event(i))))
                 } else {
                     Some((
-                        "「！」の しるしの ある ばしょへ いってみよう。",
+                        TIPS[4],
                         self.place_with(|g, k| {
                             EVENTS.iter().any(|e| {
                                 e.era == g.journal.era
@@ -810,10 +875,7 @@ impl Game {
                     ))
                 }
             }
-            Mode::Field if f & FLAG_CODEX == 0 => Some((
-                "あつめた きろくは「図鑑」で みられるよ。おしてみて！",
-                Some(Target::Codex),
-            )),
+            Mode::Field if f & FLAG_CODEX == 0 => Some((TIPS[5], Some(Target::Codex))),
             _ => None,
         }
     }

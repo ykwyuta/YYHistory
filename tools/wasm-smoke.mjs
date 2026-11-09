@@ -27,7 +27,7 @@ const has=(word)=>assert.ok(labels.some(t=>t.includes(word)),`Expected text: ${w
 const click=(word)=>{const t=frame.find(f=>f.kind==='text'&&f.text.includes(word));assert.ok(t,`No text to click: ${word}`);const [x,y,w,h]=t.args;const px=(x+Math.max(w,4)/2)*uiScale,py=(y+Math.max(h,4)/2)*uiScale;wasm.yy_event(0,px,py,0);wasm.yy_event(1,0,px,py);wasm.yy_event(2,0,px,py);tick();};
 wasm.yy_init(1360,720,0);tick();has('YYHistory');has('転移先の時代');has('共和政ローマ');has('転移する');
 // はじめて遊ぶとき：時空探偵のおはなしから始まる
-tick(12);has('ようこそ、じくう たんてい！');key(13);has('タイムマシンで しゅっぱつ！');
+tick(12);has('じくう たんていの じけんぼ');has('はじめる');key(13);has('ようこそ、じくう たんてい！');key(13);has('タイムマシンで しゅっぱつ！');
 for(let i=0;i<5;i++)key(13);has('ぼくは ナビの クロノ！');key(13);has('しゅっぱつ！');key(13);
 has('いきたい じだいを えらんで');
 assert.ok(textures[1].w>=720);
