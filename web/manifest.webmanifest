@@ -1,6 +1,6 @@
 {
-  "name": "YYHistory — 時空を渡り、歴史に出会う",
-  "short_name": "YYHistory",
+  "name": "時空事件簿",
+  "short_name": "時空事件簿",
   "description": "時代と地域を選んで歴史の現場へ転移し、人物に会い、出来事を観察するゲーム",
   "start_url": "./",
   "scope": "./",

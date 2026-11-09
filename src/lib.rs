@@ -13,9 +13,9 @@ mod gfx;
 #[cfg(all(windows, not(all(test, feature = "headless"))))]
 #[path = "win/gfx.rs"]
 mod gfx;
-mod glossary;
 mod history;
 mod images;
+mod notes;
 #[cfg(any(not(windows), all(test, feature = "headless")))]
 pub mod platform;
 #[cfg(all(windows, not(all(test, feature = "headless"))))]

@@ -81,5 +81,5 @@ macro_rules! tf {
 /// 窓の題名
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn window_title() -> &'static str {
-    "YYHistory — 時空を渡り、歴史に出会う"
+    "時空事件簿"
 }

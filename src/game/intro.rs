@@ -36,54 +36,54 @@ pub struct Page {
 
 /// クロノの案内の文
 pub static TIPS: [&str; 6] = [
-    "いきたい じだいを えらんで、「転移する」を おしてね！",
-    "「会う」を おして、おはなしを きいてみよう！",
-    "「人」の しるしの ある ばしょを おしてみよう。そこまで あるいて いけるよ。",
-    "「観察」を おすと、ここで おきた できごとが みられるよ。",
-    "「！」の しるしの ある ばしょへ いってみよう。",
-    "あつめた きろくは「図鑑」で みられるよ。おしてみて！",
+    "行きたい時代を選んで、「転移する」を押してね！",
+    "「会う」を押して、話を聞いてみよう！",
+    "「人」のしるしがある場所を押してみよう。そこまで歩いて行けるよ。",
+    "「観察」を押すと、ここで起きた出来事が見られるよ。",
+    "「！」のしるしがある場所へ行ってみよう。",
+    "集めた記録は「図鑑」で見られるよ。押してみて！",
 ];
 
 pub static PAGES: &[Page] = &[
     Page {
         scene: Scene::Detective,
-        title: "ようこそ、じくう たんてい！",
-        body: "きみは、れきしの なぞを おいかける「じくう たんてい」。\nむかし ほんとうに なにが おきたのかを しらべるのが、\nきみの しごとだよ。",
+        title: "ようこそ、時空探偵！",
+        body: "きみは、歴史のなぞを追いかける「時空探偵」。\n昔、本当に何が起きたのかを調べるのが、\nきみの仕事だよ。",
     },
     Page {
         scene: Scene::Machine,
-        title: "タイムマシンで しゅっぱつ！",
-        body: "きみの タイムマシンは、むかしの じだいへ ひとっとび。\nローマ、ちょうあん、へいあんきょう、パリ、えど……\nせかいの いろいろな まちへ いけるよ。",
+        title: "タイムマシンで出発！",
+        body: "きみのタイムマシンは、昔の時代へひとっとび。\nローマ、長安、平安京、パリ、江戸……\n世界のいろいろな町へ行けるよ。",
     },
     Page {
         scene: Scene::People,
-        title: "むかしの ひとに あえる",
-        body: "その じだいに いきていた ひとたちに あって、\nおはなしを きく ことが できるんだ。\nだれに あえるかな？",
+        title: "昔の人に会える",
+        body: "その時代に生きていた人たちに会って、\n話を聞くことができるんだ。\nだれに会えるかな？",
     },
     Page {
         scene: Scene::Rule,
-        title: "でも、ひとつ だいじな きまり",
-        body: "じくう たんていは、れきしを かえる ことは できない。\nきみが あった ことや はなした ことは、\n「じくうの ふくげんりょく」で れきしから きえてしまうんだ。",
+        title: "でも、一つ大事なきまり",
+        body: "時空探偵は、歴史を変えることはできない。\nきみが会ったことや話したことは、\n「時空の復元力」で歴史から消えてしまうんだ。",
     },
     Page {
         scene: Scene::Erase,
-        title: "じくうの ふくげんりょく って？",
-        body: "れきしが「もとの かたちに もどろう」と する、ふしぎな ちから。\nむかしの ひとは、きみと はなした ことを わすれてしまう。\nだから れきしは かわらない。あんしんして いろいろ きいてみよう！",
+        title: "時空の復元力って？",
+        body: "歴史が「もとの形にもどろう」とする、ふしぎな力。\n昔の人は、きみと話したことを忘れてしまう。\nだから歴史は変わらない。安心していろいろ聞いてみよう！",
     },
     Page {
         scene: Scene::Book,
-        title: "しらべた ことは ずかんに のこる",
-        body: "きみが みたり きいたり した ことは、きみの「ずかん」に のこるよ。\nその じだいの きろくを ぜんぶ あつめると……\n「アカシックレコードの しれん」が まっている！",
+        title: "調べたことは図鑑に残る",
+        body: "きみが見たり聞いたりしたことは、きみの「図鑑」に残るよ。\nその時代の記録を全部集めると……\n「アカシックレコードの試練」が待っている！",
     },
     Page {
         scene: Scene::Chrono,
-        title: "ぼくは ナビの クロノ！",
-        body: "タイムマシンの あんないがかり、クロノだよ。\nどこを おせば いいか、ぼくが おしえるね。\nこまったら「使い方」を おしてね。",
+        title: "ぼくはナビのクロノ！",
+        body: "タイムマシンの案内係、クロノだよ。\nどこを押せばいいか、ぼくが教えるね。\n困ったら「使い方」を押してね。",
     },
     Page {
         scene: Scene::Truth,
-        title: "さあ、しゅっぱつ！",
-        body: "じくう たんていと クロノは、おはなしの なかの キャラクター。\nでも、であう ひとや できごとは、ほんとうに あった れきしだよ。\nさあ、れきしの なぞを しらべに いこう！",
+        title: "さあ、出発！",
+        body: "時空探偵とクロノは、お話の中のキャラクター。\nでも、出会う人や出来事は、本当にあった歴史だよ。\nさあ、歴史のなぞを調べに行こう！",
     },
 ];
 
@@ -93,7 +93,7 @@ pub const RESTORE_FX_SECS: f32 = 3.2;
 /// はじめての復元力の説明の読み上げ
 pub fn restore_speech(i: usize) -> String {
     format!(
-        "あっ、じくうの ふくげんりょくだ。{}は、きみと はなした ことを わすれてしまった。れきしは もとの まま。きみが きいた おはなしは、ずかんに のこっているよ。",
+        "あっ、時空の復元力だ。{}は、きみと話したことを忘れてしまった。歴史はもとのまま。きみが聞いた話は、図鑑に残っているよ。",
         PEOPLE[i].name
     )
 }
@@ -115,12 +115,12 @@ impl Game {
             self.journal.flags |= FLAG_INTRO;
             self.change();
         }
-        self.notify("まずは いきたい じだいを えらぼう！");
+        self.notify("まずは行きたい時代を選ぼう！");
     }
 
     // -------------------------------------------------------------- 絵の部品
     /// 星空（時空のあいだ）
-    fn starfield(&mut self, a: f32) {
+    pub(super) fn starfield(&mut self, a: f32) {
         let (w, h) = (self.gfx.width as f32, self.gfx.height as f32);
         self.gfx.fill_rect(0., 0., w, h, [0.02, 0.04, 0.10, a]);
         for k in 0..90u32 {
@@ -288,9 +288,9 @@ impl Game {
         let compact = self.gfx.compact;
         self.starfield(0.97);
         let cy = h * if compact { 0.20 } else { 0.26 };
-        self.text("YYHistory", 0., cy - 40., w, 60., Font::Title, GOLD);
+        self.text("時空事件簿", 0., cy - 40., w, 60., Font::Title, GOLD);
         self.text(
-            "じくう たんていの じけんぼ",
+            "じくう じけんぼ ― 歴史のなぞを追う時空探偵",
             0.,
             cy + 26.,
             w,
@@ -320,9 +320,9 @@ impl Game {
         );
         self.text(
             if self.voice {
-                "おはなしを こえで よみあげるよ（「声」で けせるよ）"
+                "お話を声で読み上げるよ（「声」で消せるよ）"
             } else {
-                "「声」を ON に すると、おはなしを よみあげるよ"
+                "「声」をONにすると、お話を読み上げるよ"
             },
             0.,
             by + 72.,
@@ -460,9 +460,9 @@ impl Game {
                 // こども向けに、よみがなで
                 let ids = [
                     ("caesar", "カエサル", "ローマ"),
-                    ("murasaki", "むらさきしきぶ", "へいあんきょう"),
+                    ("murasaki", "紫式部", "平安京"),
                     ("leonardo", "レオナルド", "フィレンツェ"),
-                    ("katsu", "かつ かいしゅう", "えど"),
+                    ("katsu", "勝海舟", "江戸"),
                 ];
                 let r = 56. * s;
                 let gap = (w - 120.).min(640. * s) / 4.;
@@ -713,7 +713,7 @@ impl Game {
             if last {
                 "しゅっぱつ！"
             } else {
-                "つぎへ ▶"
+                "次へ ▶"
             },
             [x + cw - 176., y + ch - 44., 160., 36.],
             Act::Next,
@@ -761,7 +761,7 @@ impl Game {
         self.gfx
             .stroke_round(x, y, x + cw, y + ch, 14., 1.5, alpha(CYAN, 0.8));
         self.text(
-            "あっ！ じくうの ふくげんりょくだ！",
+            "あっ！ 時空の復元力だ！",
             x + 20.,
             y + 10.,
             cw - 40.,
@@ -770,7 +770,7 @@ impl Game {
             GOLD,
         );
         let body = format!(
-            "{}は、きみと はなした ことを わすれてしまった。\nれきしは もとの まま。だから だいじょうぶ。\nきみが きいた おはなしは、ずかんに ちゃんと のこっているよ。",
+            "{}は、きみと話したことを忘れてしまった。\n歴史はもとのまま。だから大丈夫。\nきみが聞いた話は、図鑑にちゃんと残っているよ。",
             p.name
         );
         let ty = y + if compact { 48. } else { 62. };
@@ -810,7 +810,7 @@ impl Game {
         self.gfx
             .stroke_round(bx, by, bx + bw, by + 56., 10., 1.5, alpha(CYAN, a));
         self.text(
-            "じくうの ふくげんりょく……",
+            "時空の復元力……",
             bx + 12.,
             by + 4.,
             bw - 24.,
@@ -819,7 +819,7 @@ impl Game {
             alpha(CYAN, a),
         );
         self.text(
-            &format!("{}は、きみとの かいわを わすれた", PEOPLE[i].name),
+            &format!("{}は、きみとの会話を忘れた", PEOPLE[i].name),
             bx + 12.,
             by + 26.,
             bw - 24.,
@@ -958,62 +958,175 @@ impl Game {
     }
 }
 
-// ------------------------------------------------------------------ クロノのことばメモ
+// ------------------------------------------------------------------ クロノのなぜ？ノート
+const NOTE_ROW: f32 = 40.;
+
 impl Game {
-    /// ことばメモの高さ（用語が無ければ0）
-    pub(super) fn memo_h(&mut self, terms: &[usize], w: f32) -> f32 {
-        if terms.is_empty() {
-            return 0.;
-        }
-        let tw = w - 92.;
-        let mut h = 38.;
-        for &i in terms {
-            h += 24. + self.gfx.measure_h(glossary::TERMS[i].kid, Font::Normal, tw) + 8.;
-        }
-        h + 4.
+    /// なぜ？ノートの答えの文の幅
+    fn note_text_w(w: f32) -> f32 {
+        w - 40.
     }
 
-    /// クロノが用語をやさしく説明する。描いた高さを返す。説明した用語は図鑑の「ことば」に残る
-    pub(super) fn memo(&mut self, terms: &[usize], x: f32, y: f32, w: f32) -> f32 {
-        let h = self.memo_h(terms, w);
-        if h == 0. {
+    /// なぜ？ノートの高さ（ノートが無ければ0）。開いている答えの分だけ伸びる
+    pub(super) fn memo_h(&mut self, list: &[usize], w: f32) -> f32 {
+        if list.is_empty() {
             return 0.;
         }
+        let mut h = 48. + list.len() as f32 * NOTE_ROW + 8.;
+        if let Some(i) = self
+            .memo_open
+            .filter(|i| list.contains(i) && self.memo_for == self.overlay)
+        {
+            let n = &notes::NOTES[i];
+            h += self.gfx.measure_h(n.a, Font::Normal, Self::note_text_w(w)) + 16.;
+            h += self.gfx.measure_h(
+                &format!("史料：{}", n.source),
+                Font::Small,
+                Self::note_text_w(w),
+            ) + 6.;
+            if !n.see.is_empty() {
+                h += 38.;
+            }
+        }
+        h
+    }
+
+    /// クロノのなぜ？ノート：子どもの疑問を並べ、押すとクロノが答える。描いた高さを返す。
+    /// 聞いたノートは図鑑の「なぜ？ノート」に残る
+    pub(super) fn memo(&mut self, list: &[usize], x: f32, y: f32, w: f32) -> f32 {
+        if list.is_empty() {
+            return 0.;
+        }
+        // 別の画面・別のページに変わったら、閉じた状態から
+        if self.memo_for != self.overlay {
+            self.memo_for = self.overlay;
+            self.memo_open = None;
+        }
+        if let Some(i) = self.memo_open.filter(|i| !list.contains(i)) {
+            let _ = i;
+            self.memo_open = None;
+        }
+        if std::mem::take(&mut self.memo_turned) {
+            if let Some(i) = self.memo_open {
+                let n = &notes::NOTES[i];
+                self.say(format!("{}　{}", n.q, n.a.replace('\n', "")));
+                if !std::mem::replace(&mut self.journal.notes[i], true) {
+                    self.change();
+                }
+            }
+        }
+        let h = self.memo_h(list, w);
         self.gfx
             .fill_round(x, y, x + w, y + h, 12., [0.98, 0.96, 0.89, 0.97]);
         self.gfx
             .stroke_round(x, y, x + w, y + h, 12., 1.5, alpha(CYAN, 0.9));
-        self.chrono(x + 38., y + 44., 20., false);
+        self.chrono(x + 30., y + 26., 15., false);
         self.text(
-            "クロノの ことばメモ",
-            x + 76.,
-            y + 8.,
-            w - 90.,
+            "クロノのなぜ？ノート　―　気になることを押してね",
+            x + 56.,
+            y + 12.,
+            w - 70.,
             22.,
             Font::Normal,
             [0.15, 0.45, 0.60, 1.],
         );
-        let tw = w - 92.;
-        let mut yy = y + 36.;
-        let mut learned = false;
-        for &i in terms {
-            let t = &glossary::TERMS[i];
-            self.text(
-                &format!("{}（{}）", t.name(), t.kana),
-                x + 76.,
-                yy,
-                tw,
-                22.,
-                Font::Big,
-                INK,
+        let mut yy = y + 48.;
+        for &i in list {
+            let n = &notes::NOTES[i];
+            let open = self.memo_open == Some(i);
+            let heard = self.journal.notes[i];
+            let r = [x + 12., yy, w - 24., NOTE_ROW - 6.];
+            self.gfx.fill_round(
+                r[0],
+                r[1],
+                r[0] + r[2],
+                r[1] + r[3],
+                8.,
+                if open {
+                    [0.86, 0.93, 0.97, 1.]
+                } else {
+                    [1., 1., 1., 0.9]
+                },
             );
-            let eh = self.gfx.measure_h(t.kid, Font::Normal, tw);
-            self.text(t.kid, x + 76., yy + 24., tw, eh, Font::Normal, INK_SOFT);
-            yy += 24. + eh + 8.;
-            learned |= !std::mem::replace(&mut self.journal.terms[i], true);
-        }
-        if learned {
-            self.change();
+            self.gfx.stroke_round(
+                r[0],
+                r[1],
+                r[0] + r[2],
+                r[1] + r[3],
+                8.,
+                1.,
+                if open {
+                    [0.25, 0.55, 0.70, 1.]
+                } else {
+                    [0.75, 0.70, 0.58, 1.]
+                },
+            );
+            self.text(
+                if open { "▼" } else { "？" },
+                r[0] + 6.,
+                r[1] + 5.,
+                24.,
+                24.,
+                Font::NormalCenter,
+                [0.20, 0.50, 0.66, 1.],
+            );
+            self.text(n.q, r[0] + 34., r[1] + 6., r[2] - 90., 24., Font::Big, INK);
+            if heard && !open {
+                self.text(
+                    "きいた",
+                    r[0] + r[2] - 56.,
+                    r[1] + 8.,
+                    48.,
+                    20.,
+                    Font::Small,
+                    INK_SOFT,
+                );
+            }
+            self.buttons.push(Button {
+                rect: r,
+                act: Act::Note(i),
+            });
+            yy += NOTE_ROW;
+            if open {
+                let tw = Self::note_text_w(w);
+                let ah = self.gfx.measure_h(n.a, Font::Normal, tw);
+                self.text(n.a, x + 26., yy + 4., tw, ah, Font::Normal, INK);
+                yy += ah + 10.;
+                let src = format!("史料：{}", n.source);
+                let sh = self.gfx.measure_h(&src, Font::Small, tw);
+                self.text(&src, x + 26., yy, tw, sh, Font::Small, INK_SOFT);
+                yy += sh + 12.;
+                if !n.see.is_empty() {
+                    let mut bx = x + 26.;
+                    self.text(
+                        "あわせて見よう：",
+                        bx,
+                        yy + 6.,
+                        130.,
+                        20.,
+                        Font::Small,
+                        INK_SOFT,
+                    );
+                    bx += 130.;
+                    for id in n.see {
+                        if let Some(k) = event_index(id) {
+                            let label = format!("{} ›", EVENTS[k].title);
+                            let bw = self.gfx.measure(&label, Font::NormalCenter) + 28.;
+                            if bx + bw > x + w - 12. {
+                                break;
+                            }
+                            self.button(
+                                &label,
+                                [bx, yy, bw, 30.],
+                                Act::Detail(Entry::Event(k)),
+                                false,
+                            );
+                            bx += bw + 8.;
+                        }
+                    }
+                    yy += 38.;
+                }
+            }
         }
         h
     }

@@ -6,19 +6,6 @@
 //! 辞書に無い熟語が残っていないかをテストで確かめる。
 use super::*;
 
-/// クロノのことばメモの読み上げ（用語は読みがなで読む）
-pub fn memo_speech(terms: &[usize]) -> String {
-    if terms.is_empty() {
-        return String::new();
-    }
-    let mut s = String::from("クロノの ことばメモ。");
-    for &i in terms {
-        let t = &glossary::TERMS[i];
-        s += &format!("{}。{}", t.kana, t.kid);
-    }
-    s
-}
-
 /// 時代によって読みの違う地名（長安の東市・西市は「とうし・せいし」、
 /// 平安京は「ひがしのいち・にしのいち」）
 pub fn era_readings(era: usize, text: String) -> String {
@@ -49,7 +36,7 @@ pub fn place_speech(era: usize, place: usize) -> String {
             .filter(|q| q.era == era && q.place == p.id)
             .count();
         format!(
-            "{}に ついた。{}。ここには、人物が{}人、出来事が{}件。",
+            "{}に着いた。{}。ここには、人物が{}人、出来事が{}件。",
             p.name, p.desc, people, events
         )
     })
@@ -60,29 +47,19 @@ pub fn meet_speech(i: usize, page: usize) -> String {
     era_readings(PEOPLE[i].era, {
         let p = &PEOPLE[i];
         let line = p.lines[page.min(p.lines.len() - 1)];
-        let (head, terms) = if page == 0 {
-            (
-                format!("{}。{}。", p.name, p.role),
-                glossary::find(&format!("{}{}", p.role, line)),
-            )
+        let head = if page == 0 {
+            format!("{}。{}。", p.name, p.role)
         } else {
-            (String::new(), glossary::find(line))
+            String::new()
         };
-        format!("{head}{line}{}", memo_speech(&terms))
+        format!("{head}{line}")
     })
 }
 
 pub fn observe_speech(i: usize) -> String {
     era_readings(EVENTS[i].era, {
         let e = &EVENTS[i];
-        let body = e.body.join("");
-        format!(
-            "{}。{}。{}{}",
-            e.date,
-            e.title,
-            body,
-            memo_speech(&glossary::find(&body))
-        )
+        format!("{}。{}。{}", e.date, e.title, e.body.join(""))
     })
 }
 
@@ -96,14 +73,7 @@ pub fn detail_speech(e: Entry) -> String {
             match e {
                 Entry::Person(i) => {
                     let p = &PEOPLE[i];
-                    format!(
-                        "{}。{}。{}。{}{}",
-                        p.name,
-                        p.life,
-                        p.role,
-                        p.bio,
-                        memo_speech(&glossary::find(p.bio))
-                    )
+                    format!("{}。{}。{}。{}", p.name, p.life, p.role, p.bio)
                 }
                 Entry::Event(i) => observe_speech(i),
             }
@@ -129,15 +99,12 @@ pub fn question_speech(era: usize, q: usize) -> String {
 pub fn answer_speech(era: usize, q: usize, pick: usize) -> String {
     era_readings(era, {
         let quiz = &QUIZZES[quizzes(era)[q]];
-        let terms = glossary::find(&format!("{}{}{}", quiz.q, quiz.choices.join(""), quiz.note));
         if pick == quiz.answer {
-            format!("正解。{}{}", quiz.note, memo_speech(&terms))
+            format!("正解。{}", quiz.note)
         } else {
             format!(
-                "不正解。正解は、{}。{}{}",
-                quiz.choices[quiz.answer],
-                quiz.note,
-                memo_speech(&terms)
+                "不正解。正解は、{}。{}",
+                quiz.choices[quiz.answer], quiz.note
             )
         }
     })
@@ -145,7 +112,7 @@ pub fn answer_speech(era: usize, q: usize, pick: usize) -> String {
 
 pub fn trial_intro_speech(era: usize) -> String {
     format!(
-        "この時代の記録は すべて そろった。アカシックレコードの試練が はじまる。{}についての四択問題が{}問。全問正解すると、この時代の秘宝が 手に入る。",
+        "この時代の記録はすべてそろった。アカシックレコードの試練が始まる。{}についての四択問題が{}問。全問正解すると、この時代の秘宝が手に入る。",
         ERAS[era].name,
         quizzes(era).len()
     )
@@ -158,7 +125,7 @@ pub fn result_speech(era: usize, score: usize) -> String {
         format!("全問正解。秘宝、{}を 手に入れた。{}", t.name, t.desc)
     } else {
         format!(
-            "{}問中{}問 正解。全問正解には とどかなかった。図鑑で 読み返してから、もう一度 挑もう。",
+            "{}問中{}問正解。全問正解にはとどかなかった。図鑑で読み返してから、もう一度挑もう。",
             n, score
         )
     }
@@ -211,6 +178,7 @@ impl Game {
             Overlay::Treasure(era) => treasure_speech(era),
             Overlay::Story(page) => story_speech(page),
             Overlay::Title => story_speech(0),
+            Overlay::Briefing(era, page) => briefing::speech(era, page),
             Overlay::Restore(i) => restore_speech(i),
             Overlay::Help | Overlay::None => match self.mode {
                 Mode::Atlas => era_speech(self.pick),
@@ -286,10 +254,18 @@ pub fn all_speech() -> Vec<String> {
     for i in 0..EVENTS.len() {
         v.push(detail_speech(Entry::Event(i)));
     }
+    for era in 0..ERAS.len() {
+        for page in 0..briefing::pages(era).len() {
+            v.push(briefing::speech(era, page));
+        }
+    }
+    for n in notes::NOTES {
+        v.push(format!("{}　{}", n.q, n.a.replace('\n', "")));
+    }
     for page in 0..intro::PAGES.len() {
         v.push(story_speech(page));
     }
     v.extend(intro::TIPS.iter().map(|t| format!("クロノ。{t}")));
-    v.push("この時代の記録は すべて 集まった。アカシックレコードの試練が 始まる。".to_string());
+    v.push("この時代の記録はすべて集まった。アカシックレコードの試練が始まる。".to_string());
     v
 }
