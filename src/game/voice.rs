@@ -44,6 +44,23 @@ pub fn place_speech(era: usize, place: usize) -> String {
 
 /// 人物の話（1ページ目は名前と肩書きから）
 pub fn meet_speech(i: usize, page: usize) -> String {
+    if let Some(t) = crate::talk::find(PEOPLE[i].id) {
+        let n = t.asks.len();
+        let text = if page == 0 {
+            format!("{}{}", t.scene, t.greet)
+        } else if page <= n {
+            let a = &t.asks[page - 1];
+            let how = if a.how.is_empty() {
+                String::new()
+            } else {
+                format!("{}。", a.how)
+            };
+            format!("{}　{how}{}", a.q, a.a)
+        } else {
+            t.bye.to_string()
+        };
+        return era_readings(PEOPLE[i].era, text.replace('\n', ""));
+    }
     era_readings(PEOPLE[i].era, {
         let p = &PEOPLE[i];
         let line = p.lines[page.min(p.lines.len() - 1)];
@@ -245,7 +262,7 @@ pub fn all_speech() -> Vec<String> {
         v.push(treasure_speech(era));
     }
     for i in 0..PEOPLE.len() {
-        for page in 0..PEOPLE[i].lines.len() {
+        for page in 0..crate::talk::pages(i) {
             v.push(meet_speech(i, page));
         }
         v.push(detail_speech(Entry::Person(i)));

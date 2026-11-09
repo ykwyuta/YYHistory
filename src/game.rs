@@ -4,6 +4,7 @@
 //! 人物に会い、出来事を観察する。出会った人物と観察した出来事は図鑑
 //! （人物一覧表・年表・出来事集）に記録される。
 mod briefing;
+mod conversation;
 mod intro;
 mod voice;
 mod warp;
@@ -12,7 +13,7 @@ use intro::{restore_speech, Target};
 use crate::{
     gfx::{Font, Gfx, Texture},
     history::*,
-    images, notes, platform, Ev,
+    images, notes, platform, talk, Ev,
 };
 
 // ------------------------------------------------------------------ 色
@@ -117,6 +118,8 @@ enum Act {
     Shift(usize, Option<usize>),
     Goto(usize),
     Meet(usize),
+    /// 会話で質問する（何番目の質問か）
+    Ask(usize),
     Observe(usize),
     Next,
     Prev,
@@ -424,6 +427,8 @@ pub struct Game {
     /// 開いているなぜ？ノート（どの画面のノートか）
     memo_open: Option<usize>,
     memo_for: Overlay,
+    /// いまの会話で、もうきいた質問（ビット）
+    asked: u32,
     /// ページを送ったら、その用語を読み上げる
     memo_turned: bool,
     /// 時代の説明を読み終えたら転移する先
@@ -483,6 +488,7 @@ impl Game {
             card_rect: None,
             memo_open: None,
             memo_for: Overlay::None,
+            asked: 0,
             memo_turned: false,
             briefing_then: None,
             voice: platform::voice_enabled(),
@@ -834,6 +840,7 @@ impl Game {
             return;
         }
         self.overlay = Overlay::Meet(i, 0);
+        self.asked = 0;
         self.scroll[Scroll::Overlay as usize] = 0.;
         if !self.journal.met[i] {
             self.journal.met[i] = true;
@@ -841,6 +848,13 @@ impl Game {
             self.change();
         }
         self.say(voice::meet_speech(i, 0));
+    }
+
+    /// 会話の場面を変える
+    fn show_talk(&mut self, i: usize, page: usize) {
+        self.overlay = Overlay::Meet(i, page);
+        self.scroll[Scroll::Overlay as usize] = 0.;
+        self.say(voice::meet_speech(i, page));
     }
 
     fn observe(&mut self, i: usize) {
@@ -901,8 +915,23 @@ impl Game {
             Act::BriefSkip => self.finish_briefing(),
             Act::Goto(p) => self.goto(p),
             Act::Meet(i) => self.meet(i),
+            Act::Ask(k) => {
+                if let Overlay::Meet(i, _) = self.overlay {
+                    self.asked |= 1 << k;
+                    self.show_talk(i, k + 1);
+                }
+            }
             Act::Observe(i) => self.observe(i),
             Act::Next => match self.overlay {
+                // 会話：「別れる」で別れぎわのひとこと、もう一度押すと閉じる
+                Overlay::Meet(i, page) if talk::find(PEOPLE[i].id).is_some() => {
+                    let last = talk::pages(i) - 1;
+                    if page < last {
+                        self.show_talk(i, last);
+                    } else {
+                        self.close_overlay();
+                    }
+                }
                 Overlay::Meet(i, page) => {
                     if page + 1 < PEOPLE[i].lines.len() {
                         self.overlay = Overlay::Meet(i, page + 1);
@@ -2652,6 +2681,9 @@ impl Game {
     }
 
     fn meet_ui(&mut self, i: usize, page: usize) {
+        if let Some(t) = talk::find(PEOPLE[i].id) {
+            return self.talk_ui(i, t, page);
+        }
         let p = &PEOPLE[i];
         let compact = self.gfx.compact;
         let line = p.lines[page.min(p.lines.len() - 1)];
@@ -4824,6 +4856,14 @@ fn icon(g: &mut Gfx, kind: Kind, x: f32, y: f32, s: f32) {
 
 #[cfg(test)]
 mod tests {
+    /// 会話を最後まで進めて閉じるのに必要な「次へ」の回数
+    fn meet_steps(i: usize) -> usize {
+        if talk::find(PEOPLE[i].id).is_some() {
+            2
+        } else {
+            PEOPLE[i].lines.len()
+        }
+    }
     use super::*;
 
     /// 導入を済ませた状態のゲーム（ほかの機能を調べるため）
@@ -4892,7 +4932,7 @@ mod tests {
                 for i in g.people_here() {
                     g.act(Act::Meet(i));
                     assert_eq!(g.overlay, Overlay::Meet(i, 0));
-                    for _ in 0..PEOPLE[i].lines.len() {
+                    for _ in 0..meet_steps(i) {
                         g.render();
                         g.act(Act::Next);
                     }
@@ -5032,7 +5072,7 @@ mod tests {
             Some(intro::Target::Person(antony))
         );
         g.act(Act::Meet(antony));
-        for _ in 0..PEOPLE[antony].lines.len() {
+        for _ in 0..meet_steps(antony) {
             g.act(Act::Next);
         }
         // はじめての会話のあとは、時空の復元力の説明
@@ -5046,7 +5086,7 @@ mod tests {
         g.act(Act::Goto(place_index(ROME, "palatine").unwrap()));
         run(&mut g, 10.);
         g.act(Act::Meet(cicero));
-        for _ in 0..PEOPLE[cicero].lines.len() {
+        for _ in 0..meet_steps(cicero) {
             g.act(Act::Next);
         }
         assert_eq!(g.overlay, Overlay::None);
@@ -5129,6 +5169,7 @@ mod tests {
         run(&mut g, 10.);
         let mi = person_index("michelangelo").unwrap();
         g.act(Act::Meet(mi));
+        g.act(Act::Ask(2));
         g.render();
         let pieta = notes::index("michelangelo-pieta").unwrap();
         assert!(g
@@ -5137,7 +5178,8 @@ mod tests {
             .any(|b| matches!(b.act, Act::Note(k) if k == pieta)));
         g.act(Act::Note(pieta));
         g.render();
-        g.act(Act::Next);
+        assert_eq!(g.memo_open, Some(pieta));
+        g.act(Act::Ask(0));
         g.render();
         assert_eq!(g.memo_open, None);
         // 保存と図鑑
