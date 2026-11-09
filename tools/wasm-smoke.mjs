@@ -38,9 +38,9 @@ key(13);has('これから行く時代について、説明するね！');has('�
 // 人物に会う → 人物一覧表に登録
 click('マルクス・アントニウス');has('きのうまでの友が');has('きいてみよう');
 click('これからどうするの？');has('あなた');has('血のついた衣');
-key(13);has('早く帰りなさい');has('さようなら');key(13);has('時空の復元力だ');key(13);has('人物 1/43');
+key(13);has('早く帰りなさい');has('さようなら');key(13);has('時空の復元力だ');key(13);has('人物 1/72');
 // 出来事を観察する
-click('ルペルカリア祭の冠');has('観察');has('史料：');key(27);has('出来事 1/45');
+click('ルペルカリア祭の冠');has('観察');has('史料：');key(27);has('出来事 1/86');
 tick(20);assert.ok(saved?.length>20,'autosave');
 // 図鑑
 key(0x71);has('人物一覧表');has('No.001');has('マルクス・アントニウス');has('？？？');
@@ -48,7 +48,7 @@ click('年表');has('紀元前44年2月15日');has('ルペルカリア祭の冠'
 click('出来事集');has('ルペルカリア祭の冠');
 click('なぜ？ノート');has('クロノに聞いたなぜ？');
 // 記録の読み込み
-const before=Buffer.from(saved);const ptr=wasm.yy_alloc(saved.length);new Uint8Array(wasm.memory.buffer,ptr,saved.length).set(saved);wasm.yy_loaded(ptr,saved.length);tick();has('旅の記録を読み込みました');has('人物 1/43');
+const before=Buffer.from(saved);const ptr=wasm.yy_alloc(saved.length);new Uint8Array(wasm.memory.buffer,ptr,saved.length).set(saved);wasm.yy_loaded(ptr,saved.length);tick();has('旅の記録を読み込みました');has('人物 1/72');
 tick(20);assert.equal(Buffer.from(saved).toString('hex'),before.toString('hex'));
 // 検索欄の位置を返す
 assert.ok(wasm.yy_search_box(2)>100);
@@ -61,6 +61,6 @@ assert.ok(wasm.yy_search_box(2)>100);
 key(0x1b);key(13);tick(70);has('アカシックレコードの試練に挑む');click('アカシックレコードの試練に挑む');has('試練を始める');
 key(13);has('第1問 / 5');
 for(const k of [2,3,2,1,4]){key(48+k);has('正解！');key(13);}
-has('5問中 5問 正解');has('デナリウス銀貨');has('秘宝 1/7');
+has('5問中 5問 正解');has('デナリウス銀貨');has('秘宝 1/17');
 wasm.yy_event(6,900,420,0);wasm.yy_event(8,1,0,0);tick();has('時空事件簿');
 console.log('Production Wasm smoke passed: story → atlas → briefing → shift → field → meet → observe → codex → import → trial → treasure → compact.');

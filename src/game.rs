@@ -32,14 +32,24 @@ const WATER: [f32; 4] = [0.56, 0.72, 0.78, 1.];
 
 /// 時代ごとの見分けの色
 fn era_color(i: usize) -> [f32; 4] {
-    const C: [[f32; 4]; 7] = [
+    const C: [[f32; 4]; 17] = [
         [0.85, 0.42, 0.35, 1.],
         [0.90, 0.66, 0.30, 1.],
         [0.80, 0.52, 0.78, 1.],
         [0.40, 0.76, 0.56, 1.],
         [0.48, 0.66, 0.92, 1.],
         [0.36, 0.60, 0.95, 1.],
+        [0.55, 0.78, 0.88, 1.],
+        [0.92, 0.55, 0.62, 1.],
+        [0.95, 0.40, 0.40, 1.],
         [0.86, 0.80, 0.42, 1.],
+        [0.62, 0.84, 0.48, 1.],
+        [0.98, 0.72, 0.50, 1.],
+        [0.66, 0.60, 0.95, 1.],
+        [0.95, 0.62, 0.82, 1.],
+        [0.45, 0.85, 0.80, 1.],
+        [0.80, 0.70, 0.55, 1.],
+        [0.70, 0.88, 0.95, 1.],
     ];
     C[i % C.len()]
 }
@@ -194,7 +204,9 @@ const FLAG_TIPS_OFF: u8 = 128;
 /// 導入をすべて済ませた
 const FLAGS_DONE: u8 = FLAG_INTRO | FLAG_RESTORE | FLAG_MOVED | FLAG_CODEX;
 
-const MAGIC: &[u8; 8] = b"YYHIST\x06\0";
+const MAGIC: &[u8; 8] = b"YYHIST\x07\0";
+/// 時代を番号（8つまで）で記録していた前の版
+const MAGIC_V6: &[u8; 8] = b"YYHIST\x06\0";
 /// 用語メモ（廃止）を記録していた前の版
 const MAGIC_V5: &[u8; 8] = b"YYHIST\x05\0";
 /// 用語メモの無い前の版の記録
@@ -203,12 +215,83 @@ const MAGIC_V4: &[u8; 8] = b"YYHIST\x04\0";
 const MAGIC_V3: &[u8; 8] = b"YYHIST\x03\0";
 /// 秘宝の無い前の版の記録
 const MAGIC_V2: &[u8; 8] = b"YYHIST\x02\0";
+/// 前の版（v2〜v6）の時代の番号の並び。時代を足しても、古い記録はこの並びで読む
+const OLD_ERAS: [&str; 7] = [
+    "rome",
+    "changan",
+    "heian",
+    "florence",
+    "tenochtitlan",
+    "paris",
+    "edo",
+];
 
-fn bits(v: &[bool]) -> u8 {
-    v.iter()
-        .enumerate()
-        .filter(|(_, x)| **x)
-        .fold(0u8, |a, (i, _)| a | 1 << i)
+fn era_index(id: &str) -> Option<usize> {
+    ERAS.iter().position(|e| e.id == id)
+}
+
+/// 記録の読み取り位置
+struct Reader<'a> {
+    b: &'a [u8],
+    at: usize,
+    end: usize,
+}
+
+impl Reader<'_> {
+    fn byte(&mut self) -> Option<u8> {
+        (self.at < self.end).then(|| {
+            self.at += 1;
+            self.b[self.at - 1]
+        })
+    }
+    fn str(&mut self) -> Option<&str> {
+        let len = self.byte()? as usize;
+        if self.at + len > self.end {
+            return None;
+        }
+        self.at += len;
+        std::str::from_utf8(&self.b[self.at - len..self.at]).ok()
+    }
+    /// id の一覧を読み、見つかった印を返す（知らない id や重複は不正）
+    fn ids(&mut self, find: &dyn Fn(&str) -> Option<usize>, n_all: usize) -> Option<Vec<bool>> {
+        let n = u16::from_le_bytes([self.byte()?, self.byte()?]) as usize;
+        let mut out = vec![false; n_all];
+        for _ in 0..n {
+            let i = find(self.str()?)?;
+            if std::mem::replace(&mut out[i], true) {
+                return None;
+            }
+        }
+        Some(out)
+    }
+    /// id の一覧を読み飛ばす
+    fn skip_ids(&mut self) -> Option<()> {
+        let n = u16::from_le_bytes([self.byte()?, self.byte()?]) as usize;
+        for _ in 0..n {
+            self.str()?;
+        }
+        Some(())
+    }
+}
+
+fn push_ids(b: &mut Vec<u8>, ids: Vec<&str>) {
+    b.extend_from_slice(&(ids.len() as u16).to_le_bytes());
+    for id in ids {
+        b.push(id.len() as u8);
+        b.extend_from_slice(id.as_bytes());
+    }
+}
+
+fn marked<'a, T>(
+    all: &'a [T],
+    marks: &[bool],
+    id: impl Fn(&'a T) -> &'static str,
+) -> Vec<&'static str> {
+    all.iter()
+        .zip(marks)
+        .filter(|(_, m)| **m)
+        .map(|(x, _)| id(x))
+        .collect()
 }
 
 impl Journal {
@@ -226,45 +309,16 @@ impl Journal {
     }
     fn bytes(&self) -> Vec<u8> {
         let mut b = MAGIC.to_vec();
-        b.push(self.era as u8);
+        let era = ERAS[self.era].id;
+        b.push(era.len() as u8);
+        b.extend_from_slice(era.as_bytes());
         b.push(self.place as u8);
-        b.push(bits(&self.visited));
-        b.push(bits(&self.treasures));
         b.push(self.flags);
-        let ids = |list: &mut Vec<u8>, ids: Vec<&str>| {
-            list.extend_from_slice(&(ids.len() as u16).to_le_bytes());
-            for id in ids {
-                list.push(id.len() as u8);
-                list.extend_from_slice(id.as_bytes());
-            }
-        };
-        ids(
-            &mut b,
-            PEOPLE
-                .iter()
-                .zip(&self.met)
-                .filter(|(_, m)| **m)
-                .map(|(p, _)| p.id)
-                .collect(),
-        );
-        ids(
-            &mut b,
-            EVENTS
-                .iter()
-                .zip(&self.seen)
-                .filter(|(_, m)| **m)
-                .map(|(e, _)| e.id)
-                .collect(),
-        );
-        ids(
-            &mut b,
-            notes::NOTES
-                .iter()
-                .zip(&self.notes)
-                .filter(|(_, m)| **m)
-                .map(|(n, _)| n.id)
-                .collect(),
-        );
+        push_ids(&mut b, marked(ERAS, &self.visited, |e| e.id));
+        push_ids(&mut b, marked(ERAS, &self.treasures, |e| e.id));
+        push_ids(&mut b, marked(PEOPLE, &self.met, |p| p.id));
+        push_ids(&mut b, marked(EVENTS, &self.seen, |e| e.id));
+        push_ids(&mut b, marked(notes::NOTES, &self.notes, |n| n.id));
         let hash = checksum(&b);
         b.extend_from_slice(&hash.to_le_bytes());
         b
@@ -273,83 +327,78 @@ impl Journal {
         let invalid =
             || "時空事件簿の記録として読み込めません。現在の記録はそのままです。".to_string();
         let head = if b.len() >= 8 { &b[..8] } else { &[][..] };
-        let v6 = head == MAGIC;
-        let v5 = v6 || head == MAGIC_V5;
-        let v4 = v5 || head == MAGIC_V4;
-        let v3 = v4 || head == MAGIC_V3;
-        if b.len() < 19 || b.len() > 65536 || !(v3 || head == MAGIC_V2) {
+        let legacy = [MAGIC_V6, MAGIC_V5, MAGIC_V4, MAGIC_V3, MAGIC_V2]
+            .iter()
+            .position(|m| head == *m);
+        if b.len() < 16 || b.len() > 65536 || (head != MAGIC && legacy.is_none()) {
             return Err(invalid());
         }
         let end = b.len() - 4;
         if checksum(&b[..end]) != u32::from_le_bytes(b[end..].try_into().unwrap()) {
             return Err(invalid());
         }
-        let era = b[8] as usize;
-        let place = b[9] as usize;
-        if era >= ERAS.len() || place >= ERAS[era].places.len() {
+        let mut r = Reader { b, at: 8, end };
+        let j = match legacy {
+            None => Self::read_v7(&mut r),
+            Some(k) => Self::read_legacy(&mut r, 6 - k as u8),
+        }
+        .ok_or_else(invalid)?;
+        if r.at != end || j.place >= ERAS[j.era].places.len() {
             return Err(invalid());
         }
-        let visited = (0..ERAS.len()).map(|i| b[10] & (1 << i) != 0).collect();
-        let tb = if v3 { b[11] } else { 0 };
-        if tb >> ERAS.len() != 0 {
-            return Err(invalid());
-        }
-        let treasures = (0..ERAS.len()).map(|i| tb & (1 << i) != 0).collect();
-        let stored_flags = if v4 { Some(b[12]) } else { None };
-        let mut at = 11 + v3 as usize + v4 as usize;
-        let mut list = |find: &dyn Fn(&str) -> Option<usize>, n_all: usize| {
-            if at + 2 > end {
-                return Err(invalid());
-            }
-            let n = u16::from_le_bytes([b[at], b[at + 1]]) as usize;
-            at += 2;
-            let mut out = vec![false; n_all];
-            for _ in 0..n {
-                if at >= end {
-                    return Err(invalid());
-                }
-                let len = b[at] as usize;
-                at += 1;
-                if at + len > end {
-                    return Err(invalid());
-                }
-                let id = std::str::from_utf8(&b[at..at + len]).map_err(|_| invalid())?;
-                at += len;
-                let i = find(id).ok_or_else(invalid)?;
-                if std::mem::replace(&mut out[i], true) {
-                    return Err(invalid());
+        Ok(j)
+    }
+    fn read_v7(r: &mut Reader) -> Option<Self> {
+        let era = era_index(r.str()?)?;
+        let place = r.byte()? as usize;
+        let flags = r.byte()?;
+        Some(Self {
+            era,
+            place,
+            flags,
+            visited: r.ids(&era_index, ERAS.len())?,
+            treasures: r.ids(&era_index, ERAS.len())?,
+            met: r.ids(&person_index, PEOPLE.len())?,
+            seen: r.ids(&event_index, EVENTS.len())?,
+            notes: r.ids(&notes::index, notes::NOTES.len())?,
+        })
+    }
+    /// v2〜v6：時代は OLD_ERAS の番号、訪れた時代と秘宝は1バイトの印
+    fn read_legacy(r: &mut Reader, version: u8) -> Option<Self> {
+        let old = |k: usize| era_index(OLD_ERAS.get(k)?);
+        let era = old(r.byte()? as usize)?;
+        let place = r.byte()? as usize;
+        let marks = |byte: u8| -> Option<Vec<bool>> {
+            let mut v = vec![false; ERAS.len()];
+            for k in 0..8 {
+                if byte & (1 << k) != 0 {
+                    v[old(k)?] = true;
                 }
             }
-            Ok(out)
+            Some(v)
         };
-        let met = list(&person_index, PEOPLE.len())?;
-        let seen = list(&event_index, EVENTS.len())?;
-        let notes = if v6 {
-            list(&notes::index, notes::NOTES.len())?
+        let visited = marks(r.byte()?)?;
+        let treasures = if version >= 3 {
+            marks(r.byte()?)?
         } else {
-            if v5 {
-                // 廃止した用語メモの一覧を読み飛ばす
-                if at + 2 > end {
-                    return Err(invalid());
-                }
-                let n = u16::from_le_bytes([b[at], b[at + 1]]) as usize;
-                at += 2;
-                for _ in 0..n {
-                    if at >= end || at + 1 + b[at] as usize > end {
-                        return Err(invalid());
-                    }
-                    at += 1 + b[at] as usize;
-                }
-            }
-            vec![false; notes::NOTES.len()]
+            vec![false; ERAS.len()]
         };
-        if at != end {
-            return Err(invalid());
-        }
+        let stored_flags = if version >= 4 { Some(r.byte()?) } else { None };
+        let met = r.ids(&person_index, PEOPLE.len())?;
+        let seen = r.ids(&event_index, EVENTS.len())?;
+        let notes = match version {
+            6 => r.ids(&notes::index, notes::NOTES.len())?,
+            5 => {
+                // 廃止した用語メモの一覧を読み飛ばす
+                r.skip_ids()?;
+                vec![false; notes::NOTES.len()]
+            }
+            _ => vec![false; notes::NOTES.len()],
+        };
         // 前の版の記録：もう旅をしていれば導入は済んだものとする
         let played = met.iter().chain(&seen).any(|x| *x);
         let flags = stored_flags.unwrap_or(if played { FLAGS_DONE } else { 0 });
-        Ok(Self {
+        Some(Self {
             era,
             place,
             visited,
@@ -431,6 +480,8 @@ pub struct Game {
     memo_for: Overlay,
     /// いまの会話で、もうきいた質問（ビット）
     asked: u32,
+    /// 世界地図の一覧で、見えるようにした時代
+    atlas_shown: Option<usize>,
     /// ページを送ったら、その用語を読み上げる
     memo_turned: bool,
     /// 時代の説明を読み終えたら転移する先
@@ -491,6 +542,7 @@ impl Game {
             memo_open: None,
             memo_for: Overlay::None,
             asked: 0,
+            atlas_shown: None,
             memo_turned: false,
             briefing_then: None,
             voice: platform::voice_enabled(),
@@ -1760,6 +1812,17 @@ impl Game {
         let view = [0., list_y, lw, h - list_y];
         self.scroll_areas.push((view, Scroll::Atlas));
         self.scroll_max[Scroll::Atlas as usize] = ERAS.len() as f32 * row + 12. - view[3];
+        // 選んだ時代が変わったら、一覧のその行が見えるようにずらす
+        if self.atlas_shown != Some(self.pick) {
+            self.atlas_shown = Some(self.pick);
+            let y = self.pick as f32 * row;
+            let s = &mut self.scroll[Scroll::Atlas as usize];
+            if y < *s {
+                *s = y;
+            } else if y + row > *s + view[3] {
+                *s = y + row - view[3];
+            }
+        }
         let off = self.scroll[Scroll::Atlas as usize];
         self.gfx.clip_begin(0., list_y, lw, h);
         for (i, e) in ERAS.iter().enumerate() {
@@ -1834,12 +1897,61 @@ impl Game {
         }
         self.gfx.clip_end();
 
-        // 地図の上の名札
-        for (i, e) in ERAS.iter().enumerate() {
+        // 地図の上の名札：選んだ時代から順に、重ならない場所に置く。置けない名札は出さない（点は押せる）
+        let card = if compact { 150. } else { 176. };
+        let bounds = [lw + 4., top + 4., w - 4., h - card - 4.];
+        let (tw, th) = (136., 28.);
+        // 点は名札でかくさない
+        let dots: Vec<[f32; 4]> = ERAS
+            .iter()
+            .map(|e| {
+                let (x, y) = self.atlas_project(e.lon, e.lat);
+                [x - 8., y - 8., 16., 16.]
+            })
+            .collect();
+        let mut placed: Vec<[f32; 4]> = vec![];
+        let mut order: Vec<usize> = (0..ERAS.len()).collect();
+        order.sort_by_key(|i| *i != self.pick);
+        let mut tags: Vec<(usize, Option<[f32; 4]>)> = vec![];
+        for &i in &order {
+            let e = &ERAS[i];
+            let (x, y) = self.atlas_project(e.lon, e.lat);
+            let candidates = [
+                e.tag,
+                (14., -th / 2.),
+                (-tw - 14., -th / 2.),
+                (-tw / 2., -th - 12.),
+                (-tw / 2., 12.),
+                (14., -th - 8.),
+                (-tw - 14., -th - 8.),
+                (14., 8.),
+                (-tw - 14., 8.),
+            ];
+            let free = |r: [f32; 4]| {
+                r[0] >= bounds[0]
+                    && r[1] >= bounds[1]
+                    && r[0] + r[2] <= bounds[2]
+                    && r[1] + r[3] <= bounds[3]
+                    && placed.iter().chain(&dots).all(|q| {
+                        r[0] + r[2] + 4. <= q[0]
+                            || q[0] + q[2] + 4. <= r[0]
+                            || r[1] + r[3] + 2. <= q[1]
+                            || q[1] + q[3] + 2. <= r[1]
+                    })
+            };
+            let r = candidates
+                .iter()
+                .map(|(dx, dy)| [x + dx, y + dy, tw, th])
+                .find(|r| free(*r));
+            if let Some(r) = r {
+                placed.push(r);
+            }
+            tags.push((i, r));
+        }
+        for (i, r) in tags.into_iter().rev() {
+            let e = &ERAS[i];
             let (x, y) = self.atlas_project(e.lon, e.lat);
             let sel = i == self.pick;
-            let (tx, ty) = (x + e.tag.0, y + e.tag.1);
-            let tw = 136.;
             self.gfx.fill_circle(
                 x,
                 y,
@@ -1848,12 +1960,16 @@ impl Game {
             );
             self.gfx
                 .stroke_circle(x, y, 9., 1.5, alpha(era_color(i), 0.9));
-            let r = [tx, ty, tw, 28.];
+            self.buttons.push(Button {
+                rect: [x - 12., y - 12., 24., 24.],
+                act: Act::PickEra(i),
+            });
+            let Some(r) = r else { continue };
             self.gfx.fill_round(
                 r[0],
                 r[1],
                 r[0] + tw,
-                r[1] + 28.,
+                r[1] + th,
                 6.,
                 if sel {
                     [0.18, 0.25, 0.40, 0.96]
@@ -1865,15 +1981,15 @@ impl Game {
                 r[0],
                 r[1],
                 r[0] + tw,
-                r[1] + 28.,
+                r[1] + th,
                 6.,
                 1.,
                 if sel { GOLD } else { alpha(era_color(i), 0.8) },
             );
             self.text(
                 e.name,
-                tx + 4.,
-                ty + 3.,
+                r[0] + 4.,
+                r[1] + 3.,
                 tw - 8.,
                 22.,
                 Font::NormalCenter,
@@ -1883,15 +1999,10 @@ impl Game {
                 rect: r,
                 act: Act::PickEra(i),
             });
-            self.buttons.push(Button {
-                rect: [x - 12., y - 12., 24., 24.],
-                act: Act::PickEra(i),
-            });
         }
 
         // 選んだ時代の札
         let e = &ERAS[self.pick];
-        let card = if compact { 150. } else { 176. };
         let (x0, y0, x1, y1) = (lw + 16., h - card + 4., w - 16., h - 12.);
         self.panel_box(x0, y0, x1, y1);
         // 時代の扉絵があれば左に
@@ -5408,35 +5519,74 @@ mod tests {
         assert!(g.current_tip().is_none());
     }
 
-    #[test]
-    fn older_saves_skip_the_introduction() {
-        let mut j = Journal::new();
-        j.met[0] = true;
-        let mut b = j.bytes();
-        // 用語メモの一覧（空）と、検査の値を外す
-        b.truncate(b.len() - 6);
-        b[..8].copy_from_slice(MAGIC_V3);
-        b.remove(12);
+    /// 前の版（v2〜v6）の形の記録を作る
+    fn legacy_save(
+        magic: &[u8; 8],
+        era: u8,
+        visited: u8,
+        treasures: u8,
+        flags: u8,
+        met: &[&str],
+        notes_ids: &[&str],
+    ) -> Vec<u8> {
+        let mut b = magic.to_vec();
+        b.extend([era, 0, visited]);
+        if magic != MAGIC_V2 {
+            b.push(treasures);
+        }
+        if magic != MAGIC_V2 && magic != MAGIC_V3 {
+            b.push(flags);
+        }
+        push_ids(&mut b, met.to_vec());
+        push_ids(&mut b, vec![]);
+        if magic == MAGIC_V5 || magic == MAGIC_V6 {
+            push_ids(&mut b, notes_ids.to_vec());
+        }
         let hash = checksum(&b);
         b.extend_from_slice(&hash.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn older_saves_skip_the_introduction() {
+        let b = legacy_save(MAGIC_V3, 0, 1, 0, 0, &["caesar"], &[]);
         assert_eq!(Journal::read(&b).unwrap().flags, FLAGS_DONE);
     }
 
     #[test]
     fn reads_saves_without_treasures() {
-        let mut j = Journal::new();
-        j.met[3] = true;
-        j.visited[1] = true;
-        j.flags = FLAGS_DONE;
-        let mut b = j.bytes();
-        // 用語メモの一覧（空）と、検査の値を外す
-        b.truncate(b.len() - 6);
-        b[..8].copy_from_slice(MAGIC_V2);
-        b.remove(12);
-        b.remove(11);
-        let hash = checksum(&b);
-        b.extend_from_slice(&hash.to_le_bytes());
-        assert_eq!(Journal::read(&b).unwrap(), j);
+        let b = legacy_save(MAGIC_V2, 0, 0b11, 0, 0, &["antony"], &[]);
+        let j = Journal::read(&b).unwrap();
+        assert!(j.visited[ROME] && j.visited[CHANGAN]);
+        assert!(j.met[person_index("antony").unwrap()]);
+        assert!(j.treasures.iter().all(|t| !t));
+        assert_eq!(j.flags, FLAGS_DONE);
+    }
+
+    /// 時代を番号で記録していた版：番号は前の7つの時代の並びのまま読む
+    #[test]
+    fn old_era_numbers_keep_their_meaning() {
+        let note = notes::NOTES[0].id;
+        let b = legacy_save(
+            MAGIC_V6,
+            6,
+            1 << 6 | 1,
+            1 << 6,
+            FLAGS_DONE,
+            &["katsu"],
+            &[note],
+        );
+        let j = Journal::read(&b).unwrap();
+        assert_eq!(j.era, EDO);
+        assert!(j.visited[EDO] && j.visited[ROME]);
+        assert_eq!(j.visited.iter().filter(|v| **v).count(), 2);
+        assert!(j.treasures[EDO]);
+        assert!(j.notes[0]);
+        // 用語メモの一覧を持つ v5 も読める
+        let b = legacy_save(MAGIC_V5, 5, 0, 0, FLAGS_DONE, &[], &["old-term"]);
+        assert_eq!(Journal::read(&b).unwrap().era, PARIS);
+        // 番号の範囲を外れた印は不正
+        assert!(Journal::read(&legacy_save(MAGIC_V6, 0, 1 << 7, 0, 0, &[], &[])).is_err());
     }
 
     #[test]
