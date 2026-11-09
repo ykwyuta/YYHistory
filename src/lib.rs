@@ -19,7 +19,6 @@ pub mod platform;
 #[cfg(all(windows, not(all(test, feature = "headless"))))]
 #[path = "win/platform.rs"]
 pub mod platform;
-mod scene;
 mod speech;
 #[cfg(any(not(windows), all(test, feature = "headless")))]
 mod web;

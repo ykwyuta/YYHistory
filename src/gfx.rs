@@ -458,6 +458,23 @@ impl Gfx {
         }
     }
 
+    /// 以降の文字・UI の描画を矩形の中に限る（clip_end と対で使う）
+    pub fn clip_begin(&self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        #[cfg(target_arch = "wasm32")]
+        unsafe {
+            js::js_clip(x0, y0, x1, y1)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = (x0, y0, x1, y1);
+    }
+
+    pub fn clip_end(&self) {
+        #[cfg(target_arch = "wasm32")]
+        unsafe {
+            js::js_unclip()
+        }
+    }
+
     pub fn fill_rect(&self, x0: f32, y0: f32, x1: f32, y1: f32, c: [f32; 4]) {
         #[cfg(target_arch = "wasm32")]
         unsafe {

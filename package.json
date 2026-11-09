@@ -2,7 +2,7 @@
   "name": "yyhistory",
   "private": true,
   "version": "0.1.0",
-  "description": "地図を旅して出来事を撮影する歴史写真帳。YYEarthのRust基盤から派生。",
+  "description": "時代と地域を選んで歴史の現場へ転移し、人物に会い出来事を観察する教育ゲーム。YYEarthのRust基盤から派生。",
   "scripts": {
     "build": "node tools/build.mjs",
     "test": "node --test tools/package_wasm.test.mjs",

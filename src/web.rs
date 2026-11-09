@@ -117,3 +117,13 @@ pub extern "C" fn yy_search(ptr: *mut u8, len: usize) {
 pub extern "C" fn yy_search_visible() -> u32 {
     GAME.with(|g| g.borrow().as_ref().is_some_and(|g| g.search_visible()) as u32)
 }
+/// 検索欄の位置（UI 座標。0=x 1=y 2=幅 3=高さ）
+#[no_mangle]
+pub extern "C" fn yy_search_box(i: u32) -> f32 {
+    GAME.with(|g| {
+        g.borrow()
+            .as_ref()
+            .map(|g| g.search_box()[i.min(3) as usize])
+            .unwrap_or(0.)
+    })
+}

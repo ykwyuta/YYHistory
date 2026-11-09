@@ -55,6 +55,8 @@ pub mod js {
             b: f32,
             a: f32,
         );
+        pub fn js_clip(x0: f32, y0: f32, x1: f32, y1: f32);
+        pub fn js_unclip();
         pub fn js_fill_circle(x: f32, y: f32, rad: f32, r: f32, g: f32, b: f32, a: f32);
         pub fn js_stroke_circle(x: f32, y: f32, rad: f32, w: f32, r: f32, g: f32, b: f32, a: f32);
         pub fn js_text(

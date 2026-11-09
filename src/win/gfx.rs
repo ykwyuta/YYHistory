@@ -1016,6 +1016,27 @@ impl Gfx {
         Some(b)
     }
 
+    /// 以降の文字・UI の描画を矩形の中に限る（clip_end と対で使う）
+    pub fn clip_begin(&self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        let Some(rt) = &self.d2d else { return };
+        unsafe {
+            rt.PushAxisAlignedClip(
+                &D2D_RECT_F {
+                    left: x0,
+                    top: y0,
+                    right: x1,
+                    bottom: y1,
+                },
+                D2D1_ANTIALIAS_MODE_ALIASED,
+            );
+        }
+    }
+
+    pub fn clip_end(&self) {
+        let Some(rt) = &self.d2d else { return };
+        unsafe { rt.PopAxisAlignedClip() }
+    }
+
     pub fn fill_rect(&self, x0: f32, y0: f32, x1: f32, y1: f32, c: [f32; 4]) {
         let (Some(rt), Some(b)) = (&self.d2d, self.set_brush(c)) else {
             return;

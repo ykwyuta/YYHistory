@@ -3,21 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-    <meta name="theme-color" content="#f9f7f0" />
+    <meta name="theme-color" content="#0d1424" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="歴史写真帳" />
+    <meta name="apple-mobile-web-app-title" content="YYHistory" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
-    <meta name="description" content="YYHistory — 世界地図と地域別年表から歴史の現場へ。出来事を撮影して写真帳を作る。" />
-    <title>YYHistory — 時を歩く、歴史を撮る</title>
+    <meta name="description" content="YYHistory — 時代と地域を選んで歴史の現場へ転移し、人物に会い、出来事を観察する。人物一覧表・年表・出来事集の図鑑づくり。" />
+    <title>YYHistory — 時空を渡り、歴史に出会う</title>
     <link rel="icon" href="./favicon.ico" sizes="any" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&family=Noto+Sans+SC:wght@400;700&display=swap" rel="stylesheet" />
     <style>
-      html, body { margin: 0; height: 100%; overflow: hidden; background: #f9f7f0; overscroll-behavior: none;
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #0d1424; overscroll-behavior: none;
         -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
       body { touch-action: none; }
       /* 画面の縁からの余白（指で操作する端末では、ノッチ・ホームバー・戻るジェスチャーの領域を避ける） */
@@ -44,9 +44,9 @@
   <body>
     <canvas id="gl"></canvas>
     <canvas id="ui" tabindex="0"></canvas>
-    <input id="history-search" type="search" maxlength="60" aria-label="地名・出来事・年代で検索" placeholder="地名・出来事・年代で検索" autocomplete="off" style="display:none;position:fixed;z-index:1;box-sizing:border-box;border:1px solid #d6d9cc;border-radius:7px;background:#fffffc;color:#263a3b;text-align:center;outline-color:#315e4f;touch-action:auto;user-select:text;" />
+    <input id="history-search" type="search" maxlength="60" aria-label="名前・出来事・年で検索" placeholder="名前・出来事・年で検索" autocomplete="off" style="display:none;position:fixed;z-index:1;box-sizing:border-box;border:1px solid #d6d9cc;border-radius:7px;background:#fffffc;color:#263a3b;text-align:center;outline-color:#315e4f;touch-action:auto;user-select:text;" />
     <div id="rotate"><div class="phone"></div><div id="rotate-msg">画面を横向きにしてお遊びください</div></div>
-    <div id="loading"><h1>歴史写真帳</h1><div id="loading-msg">読み込み中…</div></div>
+    <div id="loading"><h1>YYHistory</h1><div id="loading-msg">読み込み中…</div></div>
     <script type="module" src="./main.js?v=2"></script>
   </body>
 </html>
