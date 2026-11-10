@@ -493,14 +493,16 @@ impl Game {
             }
             Scene::Rule => {
                 // 一本の歴史の流れを、時空の膜が守っている
-                let (x0, x1) = (cx - 300. * s, cx + 300. * s);
+                let eras: Vec<usize> = OLD_ERAS.iter().filter_map(|id| era_index(id)).collect();
+                let (x0, x1) = (cx - 280. * s, cx + 280. * s);
                 self.gfx
                     .fill_round(x0, cy - 4., x1, cy + 4., 4., alpha(GOLD, fade));
-                for (k, e) in ERAS.iter().enumerate() {
-                    let x = x0 + (x1 - x0) * k as f32 / (ERAS.len() - 1) as f32;
-                    self.gfx.fill_circle(x, cy, 9., alpha(era_color(k), fade));
+                for (k, &i) in eras.iter().enumerate() {
+                    let e = &ERAS[i];
+                    let x = x0 + (x1 - x0) * k as f32 / (eras.len() - 1) as f32;
+                    self.gfx.fill_circle(x, cy, 9., alpha(era_color(i), fade));
                     self.text(
-                        e.years.split('（').next().unwrap_or(e.years),
+                        e.years.split(['（', '〜']).next().unwrap_or(e.years),
                         x - 60.,
                         cy + 16. + (k % 2) as f32 * 18.,
                         120.,
@@ -511,9 +513,9 @@ impl Game {
                 }
                 let p = 0.5 + 0.5 * (self.clock * 2.).sin();
                 self.gfx.stroke_round(
-                    x0 - 30.,
+                    x0 - 54.,
                     cy - 70. * s,
-                    x1 + 30.,
+                    x1 + 54.,
                     cy + 70. * s,
                     60. * s,
                     3.,
@@ -628,14 +630,15 @@ impl Game {
                 self.chrono(cx, cy, 70. * s, true);
             }
             Scene::Truth => {
-                let n = ERAS.len() as f32;
+                let eras: Vec<usize> = OLD_ERAS.iter().filter_map(|id| era_index(id)).collect();
+                let n = eras.len() as f32;
                 let tw = ((w - 80.) / n - 10.).min(150.);
                 let th = tw * 9. / 16.;
                 let x0 = cx - (tw + 10.) * n / 2. + 5.;
-                for k in 0..ERAS.len() {
+                for (k, &i) in eras.iter().enumerate() {
                     let x = x0 + k as f32 * (tw + 10.);
                     let y = cy - th / 2. + ((self.clock * 1.4 + k as f32 * 0.9).sin() * 5.);
-                    if let Some(img) = self.gfx.image(&images::era_art(k)) {
+                    if let Some(img) = self.gfx.image(&images::era_art(i)) {
                         self.gfx.draw_image(&img, x, y, x + tw, y + th, fade);
                     } else {
                         self.gfx.fill_round(
@@ -644,13 +647,13 @@ impl Game {
                             x + tw,
                             y + th,
                             6.,
-                            alpha(mix(NIGHT, era_color(k), 0.6), fade),
+                            alpha(mix(NIGHT, era_color(i), 0.6), fade),
                         );
                     }
                     self.gfx
-                        .stroke_rect(x, y, x + tw, y + th, 1.5, alpha(era_color(k), fade));
+                        .stroke_rect(x, y, x + tw, y + th, 1.5, alpha(era_color(i), fade));
                     self.text(
-                        ERAS[k].name,
+                        ERAS[i].name,
                         x - 20.,
                         y + th + 6. + (k % 2) as f32 * 18.,
                         tw + 40.,
