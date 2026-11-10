@@ -2505,26 +2505,6 @@ impl Game {
         self.gfx.stroke_circle(cx + 14., cy + 4., 5.5, 2.0, GOLD);
         self.gfx
             .fill_circle(cx + 12.2, cy + 2.2, 1.5, [1.0, 1.0, 1.0, 0.95]);
-
-        // 「きみ」の名札
-        let ly = if cy - 38. < self.map_rect()[1] + 4. {
-            cy + 21.
-        } else {
-            cy - 38.
-        };
-        self.gfx
-            .fill_round(cx - 22., ly, cx + 22., ly + 18., 9., [1.0, 0.96, 0.82, 0.98]);
-        self.gfx
-            .stroke_round(cx - 22., ly, cx + 22., ly + 18., 9., 1.8, GOLD);
-        self.text(
-            "きみ",
-            cx - 22.,
-            ly,
-            44.,
-            18.,
-            Font::NormalCenter,
-            [0.15, 0.10, 0.05, 1.],
-        );
     }
 
     fn field_ui(&mut self) {
