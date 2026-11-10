@@ -27,8 +27,24 @@ const has=(word)=>assert.ok(labels.some(t=>t.includes(word)),`Expected text: ${w
 const click=(word)=>{const t=frame.find(f=>f.kind==='text'&&f.text.includes(word));assert.ok(t,`No text to click: ${word}`);const [x,y,w,h]=t.args;const px=(x+Math.max(w,4)/2)*uiScale,py=(y+Math.max(h,4)/2)*uiScale;wasm.yy_event(0,px,py,0);wasm.yy_event(1,0,px,py);wasm.yy_event(2,0,px,py);tick();};
 wasm.yy_init(1360,720,0);tick();has('時空事件簿');has('転移先の時代');has('共和政ローマ');has('転移する');
 // はじめて遊ぶとき：時空探偵のおはなしから始まる
-tick(12);has('じくう じけんぼ');has('はじめる');key(13);has('ようこそ、時空探偵！');key(13);has('タイムマシンで出発！');
-for(let i=0;i<5;i++)key(13);has('ぼくはナビのクロノ！');key(13);has('出発！');key(13);
+const checkNoTextOverlap=()=>{
+ let start=0;
+ for(let i=0;i<frame.length;i++)if(frame[i].kind==='rect'&&frame[i].args[0]===0&&frame[i].args[1]===0&&frame[i].args[2]>=900)start=i;
+ const texts=frame.slice(start).filter(f=>f.kind==='text').map(f=>{
+  const [x,y,w,h]=f.args;
+  const tw=Math.min(w,f.text.length*14);
+  const cx=x+w/2;
+  return {text:f.text,x0:cx-tw/2,x1:cx+tw/2,y0:y,y1:y+h};
+ });
+ for(let i=0;i<texts.length;i++)for(let j=i+1;j<texts.length;j++){
+  const a=texts[i],b=texts[j];
+  const ox=Math.min(a.x1,b.x1)-Math.max(a.x0,b.x0);
+  const oy=Math.min(a.y1,b.y1)-Math.max(a.y0,b.y0);
+  assert.ok(ox<=2||oy<=2,`Overlapping text: "${a.text}" and "${b.text}"`);
+ }
+};
+tick(12);has('じくう じけんぼ');has('はじめる');key(13);has('ようこそ、時空探偵！');checkNoTextOverlap();key(13);has('タイムマシンで出発！');checkNoTextOverlap();
+for(let i=0;i<5;i++){key(13);checkNoTextOverlap();}has('ぼくはナビのクロノ！');key(13);has('出発！');checkNoTextOverlap();key(13);
 has('行きたい時代を選んで');
 assert.ok(textures[1].w>=720);
 mkdirSync(new URL('../output/review/',import.meta.url),{recursive:true});

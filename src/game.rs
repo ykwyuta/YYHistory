@@ -2349,19 +2349,162 @@ impl Game {
             );
             icon(g, p.kind, x, y, 11.);
         }
-        // 自分
-        let (ax, ay) = m(self.avatar.0, self.avatar.1);
-        let bob = (self.clock * 5.).sin() * 2.;
-        let (ax, ay) = (ax + 14., ay - 26. + bob);
-        g.circle(ax, ay + 24. - bob, 7., 16, [0., 0., 0., 0.25]);
-        g.tri(
-            (ax, ay + 20.),
-            (ax - 9., ay + 4.),
-            (ax + 9., ay + 4.),
-            [0.15, 0.55, 0.75, 1.],
+    }
+
+    /// マップ上の時空探偵（プレイヤー）のアイコンを描く
+    fn player_avatar(&mut self, px: f32, py: f32) {
+        let walking = self.travel.is_some();
+        let pulse = 0.5 + 0.5 * (self.clock * 3.5).sin();
+        let bob = (self.clock * if walking { 9. } else { 4. }).sin() * if walking { 3. } else { 2.5 };
+        // 現在地の輪（止まっているときは場所の印を光らせる）
+        if !walking {
+            self.gfx
+                .stroke_circle(px, py, 20. + pulse * 5., 2.5, [0.35, 0.90, 1.0, 0.80 - pulse * 0.4]);
+            self.gfx.stroke_circle(px, py, 16., 3., GOLD);
+        }
+        // 場所の右側には「人」「！」バッジ、下側には地名札があるので、左上側に探偵アイコンを出す
+        let side = if self.avatar.0 < 0.12 { 1. } else { -1. };
+        let (cx, cy) = if walking {
+            (px, py - 24. + bob)
+        } else {
+            (px + side * 28., py - 22. + bob)
+        };
+        // 現在地とアイコンをつなぐ光の粒（または足元の影と歩く足）
+        if walking {
+            self.gfx.fill_circle(px, py + 2., 10., [0., 0., 0., 0.32]);
+            let step = (self.clock * 12.).sin() * 3.5;
+            self.gfx
+                .fill_circle(cx - 5., cy + 20. + step, 3.8, [0.38, 0.22, 0.10, 1.]);
+            self.gfx
+                .fill_circle(cx + 5., cy + 20. - step, 3.8, [0.38, 0.22, 0.10, 1.]);
+        } else {
+            for k in 1..=3 {
+                let f = k as f32 / 4.;
+                let dx = cx + (px - cx) * f;
+                let dy = (cy + 14.) + (py - (cy + 14.)) * f;
+                self.gfx.fill_circle(dx, dy, 2.8, [0.05, 0.12, 0.22, 0.7]);
+                self.gfx.fill_circle(dx, dy, 2.0, GOLD);
+            }
+            self.gfx.fill_circle(px, py, 5.5, GOLD);
+            self.gfx.stroke_circle(px, py, 5.5, 1.5, [0.10, 0.16, 0.28, 1.]);
+        }
+        // メダリオン背景（どんな絵地図の上でもくっきり見えるように）
+        self.gfx.fill_circle(cx, cy + 3., 22., [0., 0., 0., 0.38]);
+        self.gfx
+            .stroke_circle(cx, cy, 22. + pulse * 3., 2., [0.35, 0.90, 1.0, 0.65]);
+        self.gfx.fill_circle(cx, cy, 20., [0.07, 0.16, 0.28, 0.96]);
+        self.gfx
+            .stroke_circle(cx, cy, 20., 3.5, [1.0, 0.98, 0.90, 1.0]);
+        self.gfx.stroke_circle(cx, cy, 20., 2.0, GOLD);
+
+        // 探偵マントと赤い蝶ネクタイ
+        self.gfx.fill_round(
+            cx - 13.,
+            cy + 7.,
+            cx + 13.,
+            cy + 18.,
+            6.,
+            [0.18, 0.38, 0.60, 1.],
         );
-        g.circle(ax, ay, 9., 20, [0.15, 0.55, 0.75, 1.]);
-        g.circle(ax, ay, 6., 20, [0.85, 0.97, 1., 1.]);
+        self.gfx
+            .fill_circle(cx - 3.2, cy + 10.5, 2.6, [0.90, 0.28, 0.25, 1.]);
+        self.gfx
+            .fill_circle(cx + 3.2, cy + 10.5, 2.6, [0.90, 0.28, 0.25, 1.]);
+        self.gfx.fill_circle(cx, cy + 10.5, 1.8, GOLD);
+
+        // 顔・耳・前髪
+        self.gfx
+            .fill_circle(cx - 10.5, cy + 0.5, 2.8, [1.0, 0.87, 0.74, 1.]);
+        self.gfx
+            .fill_circle(cx + 10.5, cy + 0.5, 2.8, [1.0, 0.87, 0.74, 1.]);
+        self.gfx
+            .fill_circle(cx, cy - 0.5, 10.5, [1.0, 0.90, 0.78, 1.]);
+        self.gfx.fill_round(
+            cx - 10.,
+            cy - 8.5,
+            cx + 10.,
+            cy - 2.5,
+            4.,
+            [0.32, 0.20, 0.12, 1.],
+        );
+        self.gfx
+            .fill_circle(cx, cy + 1.0, 9.3, [1.0, 0.90, 0.78, 1.]);
+        // ほっぺ
+        self.gfx
+            .fill_circle(cx - 6.2, cy + 2.5, 2.4, [1.0, 0.55, 0.58, 0.65]);
+        self.gfx
+            .fill_circle(cx + 6.2, cy + 2.5, 2.4, [1.0, 0.55, 0.58, 0.65]);
+        // 目（まばたき＋ハイライト）
+        let blink = (self.clock * 0.8) % 3.4 < 0.12;
+        for ex in [cx - 3.8, cx + 3.8] {
+            if blink {
+                self.gfx.fill_rect(
+                    ex - 2.2,
+                    cy - 0.2,
+                    ex + 2.2,
+                    cy + 1.0,
+                    [0.18, 0.12, 0.08, 1.],
+                );
+            } else {
+                self.gfx
+                    .fill_circle(ex, cy + 0.2, 2.3, [0.14, 0.10, 0.08, 1.]);
+                self.gfx
+                    .fill_circle(ex + 0.7, cy - 0.5, 0.9, [1.0, 1.0, 1.0, 0.95]);
+            }
+        }
+        // にっこり口
+        self.gfx.fill_round(
+            cx - 2.2,
+            cy + 4.0,
+            cx + 2.2,
+            cy + 6.0,
+            1.0,
+            [0.80, 0.32, 0.28, 1.],
+        );
+
+        // 探偵帽（鹿撃ち帽風）
+        self.gfx.fill_round(
+            cx - 11.5,
+            cy - 15.5,
+            cx + 11.5,
+            cy - 5.5,
+            6.,
+            [0.78, 0.54, 0.26, 1.],
+        );
+        self.gfx
+            .fill_circle(cx, cy - 16.5, 2.5, [0.52, 0.32, 0.14, 1.]);
+        self.gfx.fill_rect(
+            cx - 11.,
+            cy - 9.0,
+            cx + 11.,
+            cy - 6.5,
+            [0.42, 0.24, 0.10, 1.],
+        );
+        self.gfx.fill_round(
+            cx - 13.5,
+            cy - 7.0,
+            cx + 13.5,
+            cy - 4.2,
+            2.,
+            [0.62, 0.40, 0.18, 1.],
+        );
+        self.gfx.fill_circle(cx, cy - 11.0, 2.8, GOLD);
+        self.gfx.fill_circle(cx, cy - 11.0, 1.4, CYAN);
+
+        // 虫眼鏡
+        self.gfx.fill_round(
+            cx + 14.5,
+            cy + 7.5,
+            cx + 19.5,
+            cy + 14.5,
+            1.5,
+            [0.45, 0.26, 0.12, 1.],
+        );
+        self.gfx
+            .fill_circle(cx + 14., cy + 4., 5.5, [0.65, 0.95, 1.0, 0.88]);
+        self.gfx.stroke_circle(cx + 14., cy + 4., 5.5, 2.0, GOLD);
+        self.gfx
+            .fill_circle(cx + 12.2, cy + 2.2, 1.5, [1.0, 1.0, 1.0, 0.95]);
     }
 
     fn field_ui(&mut self) {
@@ -2399,14 +2542,6 @@ impl Game {
                     },
                 );
             }
-            let (ax, ay) = (
-                r[0] + self.avatar.0 * r[2] + 14.,
-                r[1] + self.avatar.1 * r[3] - 26. + (self.clock * 5.).sin() * 2.,
-            );
-            self.gfx
-                .fill_circle(ax, ay + 10., 8., [0.15, 0.55, 0.75, 1.]);
-            self.gfx.fill_circle(ax, ay, 9., [0.15, 0.55, 0.75, 1.]);
-            self.gfx.fill_circle(ax, ay, 6., [0.85, 0.97, 1., 1.]);
         }
         // 地名の注記
         for f in era.features.iter().filter(|_| map_img.is_none()) {
@@ -2483,6 +2618,8 @@ impl Game {
                 act: Act::Goto(i),
             });
         }
+        let (ax, ay) = (r[0] + self.avatar.0 * r[2], r[1] + self.avatar.1 * r[3]);
+        self.player_avatar(ax, ay);
         self.text(
             era.map_note,
             r[0],
