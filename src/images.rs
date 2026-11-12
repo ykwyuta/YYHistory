@@ -375,7 +375,7 @@ mod tests {
             }
             let have = std::fs::read_to_string(&file).unwrap_or_default();
             assert!(
-                have == want,
+                have.replace("\r\n", "\n") == want,
                 "{path} が古くなっています。npm run images:list で更新してください"
             );
         }
