@@ -1395,12 +1395,41 @@ impl Game {
     }
 
     // -------------------------------------------------------------- 配置
-    fn top(&self) -> f32 {
+    fn top_row_h(&self) -> f32 {
         if self.gfx.compact {
             50.
         } else {
             60.
         }
+    }
+    fn return_era(&self) -> Option<usize> {
+        (self.mode != Mode::Field && self.journal.visited.iter().any(|v| *v))
+            .then_some(self.journal.era)
+    }
+    const TOP_STATS_W: f32 = 320.;
+    const TOP_RETURN_W: f32 = 224.;
+
+    fn top_tabs_x(&self) -> f32 {
+        if self.gfx.compact {
+            200.
+        } else {
+            270.
+        }
+    }
+    fn top_controls_x(&self) -> f32 {
+        self.gfx.width as f32 - if self.gfx.compact { 200. } else { 330. }
+    }
+    fn top_stats_wrap(&self) -> bool {
+        let tabs_end = self.top_tabs_x() + 208.;
+        let left_end = if self.return_era().is_some() {
+            tabs_end + Self::TOP_RETURN_W + 8.
+        } else {
+            tabs_end
+        };
+        self.top_controls_x() - Self::TOP_STATS_W < left_end
+    }
+    fn top(&self) -> f32 {
+        self.top_row_h() + if self.top_stats_wrap() { 22. } else { 0. }
     }
     fn panel_w(&self) -> f32 {
         let w = self.gfx.width as f32;
@@ -1680,8 +1709,8 @@ impl Game {
             self.text("じくう じけんぼ", 20., 40., 220., 16., Font::Small, MUTED);
         }
         let bh = if compact { 32. } else { 36. };
-        let by = (top - bh) / 2. - 1.;
-        let mut x = if compact { 200. } else { 270. };
+        let by = (self.top_row_h() - bh) / 2. - 1.;
+        let mut x = self.top_tabs_x();
         let tabs = [
             (
                 "世界地図",
@@ -1697,11 +1726,10 @@ impl Game {
             }
             x += 104.;
         }
-        if self.journal.visited.iter().any(|v| *v) && self.mode != Mode::Field {
-            let era = self.journal.era;
+        if let Some(era) = self.return_era() {
             self.button(
                 &format!("{}へ戻る", ERAS[era].name),
-                [x, by, if compact { 170. } else { 210. }, bh],
+                [x, by, Self::TOP_RETURN_W, bh],
                 Act::Shift(era, Some(self.journal.place)),
                 false,
             );
@@ -1715,8 +1743,17 @@ impl Game {
             self.treasure_count(),
             ERAS.len()
         );
-        let right = w - if compact { 200. } else { 330. };
-        self.text(&stat, right - 300., by + 8., 290., 22., Font::Normal, CYAN);
+        let (sx, sy, sw) = if self.top_stats_wrap() {
+            let sw = self.gfx.measure(&stat, Font::Normal).ceil() + 4.;
+            (w - 14. - sw, self.top_row_h() - 2., sw)
+        } else {
+            (
+                self.top_controls_x() - Self::TOP_STATS_W,
+                by + 8.,
+                Self::TOP_STATS_W,
+            )
+        };
+        self.text(&stat, sx, sy, sw, 20., Font::Normal, CYAN);
         if compact {
             self.button(
                 "使い方",
@@ -1883,7 +1920,13 @@ impl Game {
                 Font::Small,
                 if sel { GOLD } else { MUTED },
             );
-            self.text(e.name, 26., y + 26., lw - 110., 24., Font::Big, TEXT);
+            let name_w = lw - 120.;
+            let name_font = if self.gfx.measure(e.name, Font::Big) <= name_w {
+                Font::Big
+            } else {
+                Font::Normal
+            };
+            self.text(e.name, 26., y + 26., name_w, 24., name_font, TEXT);
             if !compact {
                 self.text(e.area, 26., y + 50., lw - 60., 16., Font::Small, MUTED);
             }
@@ -1914,7 +1957,7 @@ impl Game {
         // 地図の上の名札：選んだ時代から順に、重ならない場所に置く。置けない名札は出さない（点は押せる）
         let card = if compact { 150. } else { 176. };
         let bounds = [lw + 4., top + 4., w - 4., h - card - 4.];
-        let (tw, th) = (136., 28.);
+        let th = 28.;
         // 点は名札でかくさない
         let dots: Vec<[f32; 4]> = ERAS
             .iter()
@@ -1930,6 +1973,7 @@ impl Game {
         for &i in &order {
             let e = &ERAS[i];
             let (x, y) = self.atlas_project(e.lon, e.lat);
+            let tw = (self.gfx.measure(e.name, Font::NormalCenter).ceil() + 10.).max(136.);
             let candidates = [
                 e.tag,
                 (14., -th / 2.),
@@ -1979,6 +2023,7 @@ impl Game {
                 act: Act::PickEra(i),
             });
             let Some(r) = r else { continue };
+            let tw = r[2];
             self.gfx.fill_round(
                 r[0],
                 r[1],
@@ -2019,31 +2064,22 @@ impl Game {
         let e = &ERAS[self.pick];
         let (x0, y0, x1, y1) = (lw + 16., h - card + 4., w - 16., h - 12.);
         self.panel_box(x0, y0, x1, y1);
-        // 時代の扉絵があれば左に
+        // 操作欄と本文の幅を先に確保し、残った幅に扉絵を置く。
+        let (actions_x, actions_w) = (x1 - 216., 200.);
+        let text_right = actions_x - 12.;
+        let mut tx0 = x0 + 16.;
         let art = self.gfx.image(&images::era_art(self.pick));
-        let aw = if art.is_some() {
-            (y1 - y0 - 20.) * 16. / 9.
-        } else {
-            0.
-        };
-        if let Some(img) = art {
-            self.gfx
-                .draw_image(&img, x0 + 10., y0 + 10., x0 + 10. + aw, y1 - 10., 1.);
-            self.gfx.stroke_rect(
-                x0 + 10.,
-                y0 + 10.,
-                x0 + 10. + aw,
-                y1 - 10.,
-                1.,
-                alpha(GOLD, 0.6),
-            );
-            image_tag(&mut self.gfx, x0 + 10. + aw, y1 - 10.);
+        let aw = ((y1 - y0 - 20.) * 16. / 9.).min(text_right - tx0 - 12. - 288.);
+        if let Some(img) = art.filter(|_| aw >= 96.) {
+            let ay = (y0 + y1 - aw * 9. / 16.) / 2.;
+            let ar = tx0 + aw;
+            let ab = y1 - (ay - y0);
+            self.gfx.draw_image(&img, tx0, ay, ar, ab, 1.);
+            self.gfx.stroke_rect(tx0, ay, ar, ab, 1., alpha(GOLD, 0.6));
+            image_tag(&mut self.gfx, ar, ab);
+            tx0 = ar + 12.;
         }
-        let tx0 = x0 + 20. + if aw > 0. { aw + 6. } else { 0. };
-        // 右の操作欄（幅 RIGHT）と文の欄が重ならないようにする
-        const RIGHT: f32 = 330.;
-        let tw = (x1 - tx0 - RIGHT).max(60.);
-        // 集めた数は文の欄の右上に（右の欄の上はクロノの指さしが来る）
+        let tw = text_right - tx0;
         let pc = PEOPLE.iter().filter(|p| p.era == self.pick).count();
         let ec = EVENTS.iter().filter(|x| x.era == self.pick).count();
         let count = format!(
@@ -2053,67 +2089,66 @@ impl Game {
             self.seen_count(Some(self.pick)),
             ec
         );
-        let cwid = self.gfx.measure(&count, Font::Small) + 4.;
+        let date = format!("{}　／　{}", e.years, e.area);
+        let date_w = self.gfx.measure(&date, Font::Small).ceil() + 4.;
+        let count_w = self.gfx.measure(&count, Font::Small).ceil() + 4.;
+        let stacked = date_w + count_w + 12. > tw;
         self.text(
-            &count,
-            tx0 + tw - cwid,
-            y0 + 12.,
-            cwid,
-            18.,
-            Font::Small,
-            CYAN,
-        );
-        self.text(
-            &format!("{}　／　{}", e.years, e.area),
+            &date,
             tx0,
             y0 + 12.,
-            (tw - cwid - 12.).max(20.),
+            if stacked { tw } else { date_w },
             18.,
             Font::Small,
             GOLD,
         );
+        self.text(
+            &count,
+            if stacked { tx0 } else { text_right - count_w },
+            y0 + if stacked { 30. } else { 12. },
+            count_w,
+            18.,
+            Font::Small,
+            CYAN,
+        );
+        let title_y = y0 + if stacked { 50. } else { 32. };
         let title = format!("{} ― {}", e.name, e.period);
         let title_h = self.gfx.measure_h(&title, Font::Big, tw).max(26.);
-        self.text(&title, tx0, y0 + 32., tw, title_h, Font::Big, TEXT);
-        // 題が折り返したら、説明はその下から
-        let iy = y0 + 36. + title_h;
-        self.gfx.clip_begin(tx0, iy - 2., tx0 + tw, y1 - 8.);
-        self.text(
-            e.intro,
-            tx0,
-            iy,
-            tw,
-            (y1 - 4. - iy).max(0.),
-            Font::Normal,
-            MUTED,
-        );
+        let text_bottom = y1 - 8.;
+        self.gfx.clip_begin(tx0, title_y, text_right, text_bottom);
+        self.text(&title, tx0, title_y, tw, title_h, Font::Big, TEXT);
         self.gfx.clip_end();
-        self.button(
-            "転移する",
-            [x1 - 220., y0 + 50., 200., 48.],
-            Act::Shift(self.pick, None),
-            true,
-        );
-        self.targets
-            .push((Target::Shift, [x1 - 220., y0 + 50., 200., 48.]));
-        self.speaker_button(x1 - 310., y0 + 58.);
+        // 折り返した題の下に、行が最後まで入る分だけ説明を表示する。
+        let iy = title_y + title_h + 4.;
+        let line_h = self.gfx.measure_h("あ", Font::Normal, tw).max(1.);
+        let ih = ((text_bottom - iy) / line_h).floor() * line_h;
+        if ih > 0. {
+            self.gfx.clip_begin(tx0, iy, text_right, iy + ih);
+            self.text(e.intro, tx0, iy, tw, ih, Font::Normal, MUTED);
+            self.gfx.clip_end();
+        }
+        // 操作欄の上はクロノの指さしに空けておく。
+        let shift = [actions_x, y0 + 44., actions_w, 44.];
+        self.button("転移する", shift, Act::Shift(self.pick, None), true);
+        self.targets.push((Target::Shift, shift));
+        let buttons_y = y0 + 96.;
+        self.speaker_button(actions_x, buttons_y);
         self.button(
             "クロノの説明",
-            [
-                x1 - 310.,
-                y0 + if compact { 102. } else { 108. },
-                150.,
-                if compact { 28. } else { 32. },
-            ],
+            [actions_x + 84., buttons_y, actions_w - 84., 32.],
             Act::Brief(self.pick),
             false,
         );
         if !compact {
-            let hint = "Enter でも転移できます";
-            let hw = self.gfx.measure(hint, Font::Small) + 4.;
-            if hw <= 150. {
-                self.text(hint, x1 - 20. - hw, y0 + 116., hw, 18., Font::Small, MUTED);
-            }
+            self.text(
+                "Enter でも転移できます",
+                actions_x,
+                y0 + 136.,
+                actions_w,
+                18.,
+                Font::Small,
+                MUTED,
+            );
         }
     }
 
@@ -2355,11 +2390,17 @@ impl Game {
     fn player_avatar(&mut self, px: f32, py: f32) {
         let walking = self.travel.is_some();
         let pulse = 0.5 + 0.5 * (self.clock * 3.5).sin();
-        let bob = (self.clock * if walking { 9. } else { 4. }).sin() * if walking { 3. } else { 2.5 };
+        let bob =
+            (self.clock * if walking { 9. } else { 4. }).sin() * if walking { 3. } else { 2.5 };
         // 現在地の輪（止まっているときは場所の印を光らせる）
         if !walking {
-            self.gfx
-                .stroke_circle(px, py, 20. + pulse * 5., 2.5, [0.35, 0.90, 1.0, 0.80 - pulse * 0.4]);
+            self.gfx.stroke_circle(
+                px,
+                py,
+                20. + pulse * 5.,
+                2.5,
+                [0.35, 0.90, 1.0, 0.80 - pulse * 0.4],
+            );
             self.gfx.stroke_circle(px, py, 16., 3., GOLD);
         }
         // 場所の右側には「人」「！」バッジ、下側には地名札があるので、左上側に探偵アイコンを出す
@@ -2386,7 +2427,8 @@ impl Game {
                 self.gfx.fill_circle(dx, dy, 2.0, GOLD);
             }
             self.gfx.fill_circle(px, py, 5.5, GOLD);
-            self.gfx.stroke_circle(px, py, 5.5, 1.5, [0.10, 0.16, 0.28, 1.]);
+            self.gfx
+                .stroke_circle(px, py, 5.5, 1.5, [0.10, 0.16, 0.28, 1.]);
         }
         // メダリオン背景（どんな絵地図の上でもくっきり見えるように）
         self.gfx.fill_circle(cx, cy + 3., 22., [0., 0., 0., 0.38]);
