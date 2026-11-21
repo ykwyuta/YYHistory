@@ -73,7 +73,7 @@ impl Game {
         self.button(
             if last { "さようなら" } else { "別れる" },
             [x + cw - 200., y + ch - 46., 176., 34.],
-            Act::Next,
+            Act::Leave,
             last || all,
         );
     }

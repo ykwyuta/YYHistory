@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { probe, inspect } from './check_images.mjs';
+import { probe, inspect, readBriefs, missingList } from './check_images.mjs';
 
 function png(width, height, colorType) {
   const b = Buffer.alloc(33);
@@ -38,4 +38,19 @@ test('reports size, format and transparency problems', () => {
   assert.deepEqual(inspect(png(512, 512, 6), treasure), []);
   assert.match(inspect(png(512, 512, 2), treasure)[0], /透過/);
   assert.equal(inspect(Buffer.from('x'), portrait).length, 1);
+});
+
+test('lists only missing images with their briefs', () => {
+  const manifest = { categories: { portrait: { title: '人物の肖像', width: 512, height: 512, format: 'jpg', alpha: false } } };
+  const results = [
+    { path: 'portraits/a.jpg', category: 'portrait', title: 'A', era: '時代1', status: 'ok' },
+    { path: 'portraits/b.jpg', category: 'portrait', title: 'B', era: '時代1', status: 'missing' },
+    { path: 'portraits/c.jpg', category: 'portrait', title: 'C', era: '時代2', status: 'missing' },
+  ];
+  const briefs = readBriefs('| `portraits/b.jpg` | 人物の肖像：B | Bの説明 |\r\n| `portraits/c.jpg` | 人物の肖像：C | Cの説明 |');
+  const md = missingList({ manifest, results }, briefs);
+  assert.match(md, /まだ無い画像：2 枚（必要な画像 3 枚のうち）/);
+  assert.doesNotMatch(md, /portraits\/a\.jpg/);
+  assert.match(md, /## 時代1（1 枚）/);
+  assert.match(md, /\| `portraits\/c\.jpg` \| 人物の肖像：C \| Cの説明 \|/);
 });

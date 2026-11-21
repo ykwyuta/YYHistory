@@ -142,6 +142,8 @@ enum Act {
     Shift(usize, Option<usize>),
     Goto(usize),
     Meet(usize),
+    /// 会話を切り上げる（別れぎわのひとこと、もう一度で閉じる）
+    Leave,
     /// 会話で質問する（何番目の質問か）
     Ask(usize),
     Observe(usize),
@@ -918,6 +920,18 @@ impl Game {
         self.say(voice::meet_speech(i, 0));
     }
 
+    /// 会話で、まだきいていない質問（いまの質問の次から順に探す）。
+    /// 別れぎわの場面では、もう質問しない
+    fn next_unasked(&self, i: usize, page: usize) -> Option<usize> {
+        let n = talk::of(i).asks.len();
+        if page > n {
+            return None;
+        }
+        (0..n)
+            .map(|d| (page + d) % n)
+            .find(|k| self.asked & (1 << k) == 0)
+    }
+
     /// 会話の場面を変える
     fn show_talk(&mut self, i: usize, page: usize) {
         self.overlay = Overlay::Meet(i, page);
@@ -991,15 +1005,12 @@ impl Game {
             }
             Act::Observe(i) => self.observe(i),
             Act::Next => match self.overlay {
-                // 会話：「別れる」で別れぎわのひとこと、もう一度押すと閉じる
-                Overlay::Meet(i, page) => {
-                    let last = talk::pages(i) - 1;
-                    if page < last {
-                        self.show_talk(i, last);
-                    } else {
-                        self.close_overlay();
-                    }
-                }
+                // 会話：まだきいていない質問があれば、続けてきく。
+                // すべてきいたら別れぎわのひとこと、もう一度で閉じる
+                Overlay::Meet(i, page) => match self.next_unasked(i, page) {
+                    Some(k) => self.act(Act::Ask(k)),
+                    None => self.act(Act::Leave),
+                },
                 Overlay::None => (),
                 Overlay::TrialIntro(era) => self.act(Act::Begin(era)),
                 Overlay::Title => self.open_story(0),
@@ -1021,6 +1032,17 @@ impl Game {
                 Overlay::Trial(..) => (),
                 _ => self.close_overlay(),
             },
+            // 会話：「別れる」で別れぎわのひとこと、もう一度押すと閉じる
+            Act::Leave => {
+                if let Overlay::Meet(i, page) = self.overlay {
+                    let last = talk::pages(i) - 1;
+                    if page < last {
+                        self.show_talk(i, last);
+                    } else {
+                        self.close_overlay();
+                    }
+                }
+            }
             // 会話：声をかけたところに戻る
             Act::Prev => {
                 if let Overlay::Meet(i, page) = self.overlay {
@@ -1464,10 +1486,10 @@ impl Game {
         let card = if self.gfx.compact { 150. } else { 176. };
         let aw = w - x0;
         let ah = h - top - card;
-        let scale = (aw / 300.).min(ah / 100.);
-        // 経度 -125〜175、緯度 68〜-32 を中心に収める（南アメリカのリオまで入るように）
+        let scale = (aw / 300.).min(ah / 110.);
+        // 経度 -125〜175、緯度 68〜-42 を中心に収める（ニュージーランドや南アフリカまで入るように）
         let cx = x0 + aw / 2. - 25. * scale;
-        let cy = top + ah / 2. + 18. * scale;
+        let cy = top + ah / 2. + 13. * scale;
         (scale, cx, cy)
     }
     fn atlas_project(&self, lon: f32, lat: f32) -> (f32, f32) {
@@ -5101,8 +5123,9 @@ fn icon(g: &mut Gfx, kind: Kind, x: f32, y: f32, s: f32) {
 #[cfg(test)]
 mod tests {
     /// 会話を最後まで進めて閉じるのに必要な「次へ」の回数
-    fn meet_steps(_i: usize) -> usize {
-        2
+    /// 会話を「次へ」だけで終えるまでの回数（すべての質問、別れぎわ、閉じる）
+    fn meet_steps(i: usize) -> usize {
+        talk::of(i).asks.len() + 2
     }
     use super::*;
 
@@ -5528,6 +5551,42 @@ mod tests {
         assert_eq!(g.last_speech, said);
     }
 
+    /// 1つ質問したあとに枠の外を押しても（Enterでも）、会話は終わらず次の質問へ進む。
+    /// 「別れる」を押せば、質問が残っていても切り上げられる
+    #[test]
+    fn talk_continues_while_questions_remain() {
+        let mut g = game(Gfx::new(1600, 900));
+        g.voice = false;
+        shift(&mut g, ROME);
+        run(&mut g, warp::SHIFT_SECS + 0.2);
+        let antony = person_index("antony").unwrap();
+        let n = talk::of(antony).asks.len();
+        assert!(n >= 3);
+        g.act(Act::Meet(antony));
+        g.act(Act::Ask(1));
+        assert_eq!(g.overlay, Overlay::Meet(antony, 2));
+        // 枠の外を押す → まだきいていない次の質問
+        g.render();
+        g.click(1., 1.);
+        assert_eq!(g.overlay, Overlay::Meet(antony, 3));
+        // Enter でも続く。最後まで行ったら、はじめの残りに戻る
+        for _ in 2..n {
+            g.handle(Ev::Key(13, true));
+        }
+        assert_eq!(g.overlay, Overlay::Meet(antony, 1));
+        // すべてきいたら別れぎわ、もう一度で閉じる
+        g.act(Act::Next);
+        assert_eq!(g.overlay, Overlay::Meet(antony, n + 1));
+        g.act(Act::Next);
+        assert!(!matches!(g.overlay, Overlay::Meet(..)));
+        // 質問が残っていても「別れる」で切り上げられる
+        g.overlay = Overlay::None;
+        g.act(Act::Meet(antony));
+        g.act(Act::Ask(0));
+        g.act(Act::Leave);
+        assert_eq!(g.overlay, Overlay::Meet(antony, n + 1));
+    }
+
     /// すべての人物の会話のすべての場面が、スマートフォンでも最後の質問と「別れる」まで届く
     #[test]
     fn every_talk_fits_on_phones() {
@@ -5540,7 +5599,7 @@ mod tests {
                 g.scroll[Scroll::Overlay as usize] = 0.;
                 g.render();
                 assert!(
-                    g.buttons.iter().any(|b| matches!(b.act, Act::Next)),
+                    g.buttons.iter().any(|b| matches!(b.act, Act::Leave)),
                     "{} {page}",
                     PEOPLE[i].id
                 );
@@ -5891,6 +5950,6 @@ mod tests {
     fn chronology_is_ordered() {
         let c = chronology();
         assert!(c.windows(2).all(|w| event_key(w[0]) <= event_key(w[1])));
-        assert_eq!(EVENTS[c[0]].era, ALEXANDRIA);
+        assert_eq!(EVENTS[c[0]].era, BABYLON);
     }
 }
