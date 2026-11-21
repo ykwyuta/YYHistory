@@ -2,6 +2,7 @@
 //   node tools/check_images.mjs            抜けを報告（抜けがあっても終了コード0）
 //   node tools/check_images.mjs --strict   抜けが1枚でもあれば終了コード1
 //   node tools/check_images.mjs --report   output/images-report.md にチェックリストを書く
+//   node tools/check_images.mjs --missing  docs/missing-images.md に、まだ無い画像だけの一覧（不足画像リスト）を書く
 //   --category portrait|event|treasure|era|map|ui   --era 平安京   で絞り込み
 // 置いてある画像の形式・大きさ・透過が規格と違うとき、一覧に無い余分な画像があるときは、常に終了コード1。
 import { readFileSync, existsSync, readdirSync, statSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -89,6 +90,45 @@ function report({ manifest, results, extra }) {
   return lines.join('\n');
 }
 
+/** docs/images.md の表から、パスごとの「描く内容と注意」を読む */
+export function readBriefs(md) {
+  const briefs = new Map();
+  for (const line of md.split(/\r?\n/)) {
+    const m = line.match(/^\| `([^`]+)` \| [^|]* \| (.*) \|$/);
+    if (m) briefs.set(m[1], m[2]);
+  }
+  return briefs;
+}
+
+/** まだ無い画像だけを、時代ごとに並べた一覧（不足画像リスト） */
+export function missingList({ manifest, results }, briefs) {
+  const missing = results.filter((r) => r.status === 'missing');
+  const lines = [
+    '# 不足画像リスト',
+    '',
+    'このファイルは `npm run images:missing` で生成しています（手で編集しないでください）。`assets/images/` にまだ置かれていない画像だけを、時代ごとに並べています。大きさ・形式・時代考証の約束は [images.md](images.md) を見てください。',
+    '',
+    `まだ無い画像：${missing.length} 枚（必要な画像 ${results.length} 枚のうち）`,
+    '',
+    '| 種類 | 枚数 | 大きさ | 形式 |',
+    '|---|---|---|---|',
+  ];
+  for (const [key, c] of Object.entries(manifest.categories)) {
+    const n = missing.filter((r) => r.category === key).length;
+    if (n) lines.push(`| ${c.title} | ${n} | ${c.width}×${c.height} | ${c.format.toUpperCase()}${c.alpha ? '（透過）' : ''} |`);
+  }
+  lines.push('');
+  for (const era of [...new Set(missing.map((r) => r.era))]) {
+    const rows = missing.filter((r) => r.era === era);
+    lines.push(`## ${era || '共通'}（${rows.length} 枚）`, '', '| パス | 内容 | 描く内容と注意 |', '|---|---|---|');
+    for (const r of rows) {
+      lines.push(`| \`${r.path}\` | ${manifest.categories[r.category].title}：${r.title} | ${briefs.get(r.path) || ''} |`);
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
 function main() {
   const args = process.argv.slice(2);
   const opt = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : null; };
@@ -125,6 +165,11 @@ function main() {
     mkdirSync(path.join(root, 'output'), { recursive: true });
     writeFileSync(path.join(root, 'output/images-report.md'), report(result));
     console.log('\noutput/images-report.md に書き出しました。');
+  }
+  if (args.includes('--missing')) {
+    const briefs = readBriefs(readFileSync(path.join(root, 'docs/images.md'), 'utf8'));
+    writeFileSync(path.join(root, 'docs/missing-images.md'), missingList(result, briefs));
+    console.log(`\ndocs/missing-images.md に不足画像リスト（${missing.length} 枚）を書き出しました。`);
   }
   if (invalid.length || extra.length) process.exit(1);
   if (args.includes('--strict') && missing.length) process.exit(1);

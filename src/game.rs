@@ -1486,10 +1486,10 @@ impl Game {
         let card = if self.gfx.compact { 150. } else { 176. };
         let aw = w - x0;
         let ah = h - top - card;
-        let scale = (aw / 300.).min(ah / 100.);
-        // 経度 -125〜175、緯度 68〜-32 を中心に収める（南アメリカのリオまで入るように）
+        let scale = (aw / 300.).min(ah / 110.);
+        // 経度 -125〜175、緯度 68〜-42 を中心に収める（ニュージーランドや南アフリカまで入るように）
         let cx = x0 + aw / 2. - 25. * scale;
-        let cy = top + ah / 2. + 18. * scale;
+        let cy = top + ah / 2. + 13. * scale;
         (scale, cx, cy)
     }
     fn atlas_project(&self, lon: f32, lat: f32) -> (f32, f32) {
@@ -5950,6 +5950,6 @@ mod tests {
     fn chronology_is_ordered() {
         let c = chronology();
         assert!(c.windows(2).all(|w| event_key(w[0]) <= event_key(w[1])));
-        assert_eq!(EVENTS[c[0]].era, ALEXANDRIA);
+        assert_eq!(EVENTS[c[0]].era, BABYLON);
     }
 }
